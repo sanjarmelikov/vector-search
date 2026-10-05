@@ -1,0 +1,21 @@
+[project]
+name = "anchor"
+version = "0.1.0"
+description = "A vector retrieval service with a from-scratch HNSW index, benchmarked on BEIR."
+requires-python = ">=3.11"
+dependencies = [
+    "numpy>=1.26",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["anchor*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
