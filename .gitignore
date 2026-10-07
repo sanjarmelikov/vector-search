@@ -223,3 +223,6 @@ datasets/
 # Personal study notes (not published)
 notes/
 CLAUDE.md
+
+# macOS
+.DS_Store
