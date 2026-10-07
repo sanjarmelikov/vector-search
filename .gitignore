@@ -219,3 +219,7 @@ __marimo__/
 
 # Anchor: downloaded benchmark data
 datasets/
+
+# Personal study notes (not published)
+notes/
+CLAUDE.md
