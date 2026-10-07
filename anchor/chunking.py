@@ -41,6 +41,15 @@ def _check_sizes(size: int, overlap: int) -> None:
         raise ValueError("overlap must be in [0, size)")
 
 
+class WholeDocumentChunker:
+    """No chunking: each document is one passage. The baseline for chunkers."""
+
+    name = "whole"
+
+    def split(self, text: str) -> list[str]:
+        return [text.strip()] if text.strip() else []
+
+
 class FixedSizeChunker:
     """Sliding window of `size` words, advancing by `size - overlap`."""
 

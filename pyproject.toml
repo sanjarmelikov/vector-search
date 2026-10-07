@@ -9,6 +9,12 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]
+embed = [
+    "sentence-transformers>=3",
+    "openai>=1.40",
+    "tiktoken>=0.7",
+    "python-dotenv>=1",
+]
 
 [build-system]
 requires = ["setuptools>=68"]
