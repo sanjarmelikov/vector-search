@@ -1,4 +1,20 @@
 #include "Compare.hpp"
+#include <cmath>
+
+bool CompareItemName::lessThan(const Item& a, const Item& b)
+{
+    return a.name_ < b.name_;
+}
+
+bool CompareItemName::equal(const Item& a, const Item& b)
+{
+    return a.name_ == b.name_;
+}
+
+bool CompareItemName::leq(const Item& a, const Item& b)
+{
+    return a.name_ <= b.name_;
+}
 
 bool CompareItemWeight::lessThan(const Item& a, const Item& b)
 {
