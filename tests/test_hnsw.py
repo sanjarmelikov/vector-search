@@ -126,3 +126,28 @@ def test_empty_index_small_index_and_wrong_dimension():
         index.add(np.ones((2, 3)))
     with pytest.raises(ValueError):
         HNSWIndex(4, M=1)
+
+
+def test_save_and_load_round_trip(tmp_path):
+    data = random_unit_vectors(500, 16, seed=8)
+    original = HNSWIndex(16, M=8, ef_construction=32, ef_search=20, seed=3)
+    original.add(data[:400])
+    original.save(tmp_path / "index.npz")
+    loaded = HNSWIndex.load(tmp_path / "index.npz")
+
+    assert loaded._layers == original._layers and loaded._levels == original._levels
+    assert (loaded.M, loaded.ef_construction, loaded.ef_search) == (8, 32, 20)
+    q = random_unit_vectors(1, 16, seed=9)[0]
+    assert loaded.search(q, 5)[0].tolist() == original.search(q, 5)[0].tolist()
+    # Inserting after a reload builds exactly the same graph as never reloading (RNG state saved).
+    original.add(data[400:])
+    loaded.add(data[400:])
+    assert loaded._layers == original._layers
+
+
+def test_save_and_load_empty_index(tmp_path):
+    HNSWIndex(4).save(tmp_path / "empty.npz")
+    loaded = HNSWIndex.load(tmp_path / "empty.npz")
+    assert len(loaded) == 0 and len(loaded.search(np.ones(4), 3)[0]) == 0
+    loaded.add(np.eye(4))
+    assert loaded.search(np.array([0, 1, 0, 0]), 1)[0].tolist() == [1]
