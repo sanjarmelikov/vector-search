@@ -95,7 +95,8 @@ def test_parse_index():
     assert isinstance(parse_index("flat", 8), FlatIndex)
     index = parse_index("hnsw-16-200-64", 8)
     assert isinstance(index, HNSWIndex) and (index.M, index.ef_construction, index.ef_search) == (16, 200, 64)
-    for bad in ("hnsw", "hnsw-16-200", "ivf-1-2-3", "hnsw-a-b-c"):
+    assert type(parse_index("faiss-hnsw-8-100-32", 8)).__name__ == "FaissHNSWIndex"
+    for bad in ("hnsw", "hnsw-16-200", "ivf-1-2-3", "hnsw-a-b-c", "faiss-16-200-64", "x-hnsw-1-2-3"):
         with pytest.raises(ValueError):
             parse_index(bad, 8)
 
