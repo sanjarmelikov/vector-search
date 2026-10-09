@@ -83,14 +83,41 @@ def parse_chunker(spec: str) -> Chunker:
 
 
 def parse_index(spec: str, dim: int) -> VectorIndex:
-    """'flat' or 'hnsw-<M>-<ef_construction>-<ef_search>', e.g. 'hnsw-16-200-64'."""
+    """'flat', or '<hnsw|faiss-hnsw>-<M>-<ef_construction>-<ef_search>', e.g. 'hnsw-16-200-64'."""
     if spec == "flat":
         return FlatIndex(dim)
-    kind, *params = spec.split("-")
-    if kind != "hnsw" or len(params) != 3 or not all(p.isdigit() for p in params):
-        raise ValueError(f"bad index spec {spec!r}; try 'flat' or 'hnsw-16-200-64'")
+    parts = spec.split("-")
+    kind, params = "-".join(parts[:-3]), parts[-3:]
+    if kind not in ("hnsw", "faiss-hnsw") or len(params) != 3 or not all(p.isdigit() for p in params):
+        raise ValueError(f"bad index spec {spec!r}; try 'flat', 'hnsw-16-200-64' or 'faiss-hnsw-16-200-64'")
     m, ef_construction, ef_search = map(int, params)
+    if kind == "faiss-hnsw":
+        from vector.index.faiss_hnsw import FaissHNSWIndex  # optional dependency
+
+        return FaissHNSWIndex(dim, M=m, ef_construction=ef_construction, ef_search=ef_search)
     return HNSWIndex(dim, M=m, ef_construction=ef_construction, ef_search=ef_search)
+
+
+def graph_key(spec: str) -> str:
+    """Specs that differ only in ef_search (a query-time setting) share one built graph."""
+    return spec if spec == "flat" else spec.rsplit("-", 1)[0]
+
+
+def build_index(spec: str, vectors: np.ndarray, built: dict | None = None) -> tuple[VectorIndex, float]:
+    """Build `spec` over vectors, or reuse a graph from `built` that differs only in ef_search."""
+    index = parse_index(spec, vectors.shape[1])
+    key = graph_key(spec)
+    if built is not None and key in built:
+        cached, build_seconds = built[key]
+        if hasattr(index, "ef_search"):
+            cached.ef_search = index.ef_search
+        return cached, build_seconds
+    start = time.perf_counter()
+    index.add(vectors)
+    build_seconds = time.perf_counter() - start
+    if built is not None:
+        built[key] = (index, build_seconds)
+    return index, build_seconds
 
 
 @dataclass
@@ -134,19 +161,7 @@ def evaluate_index(
     """
     chunks, query_vectors = prepared.chunks, prepared.query_vectors
 
-    index = parse_index(index_spec, embedder.dim)
-    graph_key = index_spec.rsplit("-", 1)[0] if isinstance(index, HNSWIndex) else index_spec
-    if built is not None and graph_key in built:
-        cached, build_seconds = built[graph_key]
-        if isinstance(index, HNSWIndex):
-            cached.ef_search = index.ef_search
-        index = cached
-    else:
-        start = time.perf_counter()
-        index.add(prepared.chunk_vectors)
-        build_seconds = time.perf_counter() - start
-        if built is not None:
-            built[graph_key] = (index, build_seconds)
+    index, build_seconds = build_index(index_spec, prepared.chunk_vectors, built)
 
     # Exact search is the answer key for approximate indexes (ANN recall).
     exact = FlatIndex(embedder.dim)
