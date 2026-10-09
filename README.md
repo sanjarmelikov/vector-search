@@ -70,6 +70,35 @@ G="whole fixed-100-20 fixed-150-30 fixed-200-40 sentence-100-20 sentence-150-30 
 .venv/bin/python -m vector.eval.run --model bge-small --chunker $G --out results/phase2.jsonl
 ```
 
+### Phase 3: from-scratch HNSW vs exact search
+
+`vector/index/hnsw.py`: a pure-Python HNSW (Malkov & Yashunin, 2018) with the same `add`/`search` interface as the exact index. **ANN recall@10** is the share of the exact top-10 chunks that HNSW also returns; **scored** is how many vectors each query is compared against. HNSW spec = `M`-`ef_construction`-`ef_search`. All runs from commit `f854c96`.
+
+| Data | Index | ANN recall@10 | nDCG@10 | Scored / query | Search p50 | Build |
+|---|---|---:|---:|---:|---:|---:|
+| bge-small, whole docs (5,183) | exact | 1.000 | 0.713 | 5,183 | 0.12 ms | 0.01 s |
+| | HNSW 16-200-100 | 0.997 | 0.713 | 1,108 | 0.70 ms | 7.9 s |
+| | HNSW 16-200-200 | 1.000 | 0.713 | 1,740 | 1.21 ms | (same graph) |
+| | HNSW 8-100-100 | 0.991 | 0.713 | 720 | 0.58 ms | 3.7 s |
+| MiniLM, fixed-100-20 (15,153) | exact | 1.000 | 0.674 | 15,153 | 0.44 ms | 0.01 s |
+| | HNSW 16-200-100 | 0.996 | 0.673 | 1,360 | 0.89 ms | 27.6 s |
+| | HNSW 16-200-200 | 0.999 | 0.674 | 2,285 | 1.55 ms | (same graph) |
+| | HNSW 8-100-100 | 0.986 | 0.666 | 798 | 0.68 ms | 11.8 s |
+
+- **Accurate:** ANN recall@10 of 0.99–1.00, and end-to-end retrieval quality (nDCG@10) within 0.001 of exact search at M = 16.
+- **Does far less work:** about 9% of the vectors per query at 15K chunks (1,360 of 15,153).
+- **But slower at this size:** exact search is one NumPy matrix-vector product running in C, while HNSW takes hundreds of small Python steps. As the data grew 2.9×, exact search slowed 3.6× but HNSW only 1.3× (and scored 23% more vectors), so the gap shrank from 5.6× to 2×. Phase 4 measures where they cross on 1M vectors.
+- Latencies were measured on an 8 GB M2 under memory pressure (heavy swap); the trends are clear, but absolute times are rough.
+
+Reproduce:
+
+```bash
+.venv/bin/python -m vector.eval.run --model bge-small --chunker whole \
+    --index flat hnsw-16-200-100 hnsw-16-200-200 hnsw-16-200-400 hnsw-8-100-100 --out results/phase3.jsonl
+.venv/bin/python -m vector.eval.run --model minilm --chunker fixed-100-20 \
+    --index flat hnsw-16-200-100 hnsw-16-200-200 hnsw-8-100-100 --out results/phase3.jsonl
+```
+
 ## Roadmap
 
 - [x] BEIR dataset loader
@@ -78,7 +107,7 @@ G="whole fixed-100-20 fixed-150-30 fixed-200-40 sentence-100-20 sentence-150-30 
 - [x] recall@k / MRR@k / nDCG@k evaluation
 - [x] Embeddings: local sentence-transformers + OpenAI, cached to disk
 - [x] Exact-search baseline on SciFact (MiniLM)
-- [ ] From-scratch HNSW index
+- [x] From-scratch HNSW index
 - [ ] FAISS HNSW comparison
 - [x] Chunking × embedding-model sweep (local models; OpenAI pending)
 - [ ] Re-ranking
