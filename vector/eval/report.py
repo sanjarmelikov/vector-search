@@ -22,7 +22,10 @@ def load_rows(path: Path) -> list[dict]:
             if not line.strip():
                 continue
             row = json.loads(line)
-            key = (row["model"], row["chunker"], row["k_chunks"], row.get("query_prefix", ""))
+            key = (
+                row["model"], row["chunker"], row.get("index", "flat"),
+                row["k_chunks"], row.get("query_prefix", ""),
+            )
             latest[key] = row  # later lines replace earlier runs of the same config
     return list(latest.values())
 
@@ -30,16 +33,17 @@ def load_rows(path: Path) -> list[dict]:
 def markdown_table(rows: list[dict], sort: str = "ndcg@10") -> str:
     rows = sorted(rows, key=lambda r: r["metrics"][sort], reverse=True)
     lines = [
-        "| Model | Chunking | Chunks | Truncated | R@1 | R@10 | MRR@10 | nDCG@10 | p50 ms | Commit |",
-        "|---|---|---:|---:|---:|---:|---:|---:|---:|---|",
+        "| Model | Chunking | Index | Chunks | Truncated | R@1 | R@10 | MRR@10 | nDCG@10 | ANN@10 | p50 ms | Commit |",
+        "|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---|",
     ]
     for r in rows:
         m = r["metrics"]
         commit = (r.get("commit") or "?") + ("*" if r.get("dirty") else "")
         lines.append(
-            f"| {r['model'].split('/')[-1]} | {r['chunker']} | {r['n_chunks']:,} | "
+            f"| {r['model'].split('/')[-1]} | {r['chunker']} | {r.get('index', 'flat')} | {r['n_chunks']:,} | "
             f"{r['truncated_frac']:.1%} | {m['recall@1']:.3f} | {m['recall@10']:.3f} | "
-            f"{m['mrr@10']:.3f} | {m['ndcg@10']:.3f} | {r['search_p50_ms']:.2f} | {commit} |"
+            f"{m['mrr@10']:.3f} | {m['ndcg@10']:.3f} | {r.get('ann_recall@10', 1.0):.3f} | "
+            f"{r['search_p50_ms']:.2f} | {commit} |"
         )
     return "\n".join(lines)
 

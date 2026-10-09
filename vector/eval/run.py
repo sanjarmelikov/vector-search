@@ -1,8 +1,9 @@
 """Run one retrieval experiment end to end and record the results.
 
     python -m vector.eval.run --model minilm --chunker whole fixed-200-40
+    python -m vector.eval.run --model bge-small --chunker whole --index flat hnsw-16-200-64
 
-Each (model, chunker) pair becomes one JSON row in the --out file
+Each (model, chunker, index) combination becomes one JSON row in the --out file
 (default results/phase1.jsonl), tagged with the git commit that produced it.
 """
 
@@ -14,11 +15,13 @@ import logging
 import subprocess
 import time
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
 
 from vector.chunking import (
+    Chunk,
     Chunker,
     FixedSizeChunker,
     RecursiveChunker,
@@ -30,10 +33,11 @@ from vector.data.beir import BeirDataset, load_scifact
 from vector.embed.base import Embedder
 from vector.embed.cache import DEFAULT_CACHE_DIR, cached_embed
 from vector.eval.metrics import dedupe_docs, evaluate
-from vector.index.flat import FlatIndex
+from vector.index import FlatIndex, HNSWIndex, VectorIndex
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_OUT = REPO_ROOT / "results" / "phase1.jsonl"
+ANN_K = 10
 
 
 def _minilm() -> Embedder:
@@ -78,61 +82,129 @@ def parse_chunker(spec: str) -> Chunker:
     return _CHUNKERS[kind](int(size), int(overlap))
 
 
-def run_experiment(
-    dataset: BeirDataset,
-    chunker: Chunker,
-    embedder: Embedder,
-    k_chunks: int = 100,
-    cache_dir: Path = DEFAULT_CACHE_DIR,
-) -> dict:
+def parse_index(spec: str, dim: int) -> VectorIndex:
+    """'flat' or 'hnsw-<M>-<ef_construction>-<ef_search>', e.g. 'hnsw-16-200-64'."""
+    if spec == "flat":
+        return FlatIndex(dim)
+    kind, *params = spec.split("-")
+    if kind != "hnsw" or len(params) != 3 or not all(p.isdigit() for p in params):
+        raise ValueError(f"bad index spec {spec!r}; try 'flat' or 'hnsw-16-200-64'")
+    m, ef_construction, ef_search = map(int, params)
+    return HNSWIndex(dim, M=m, ef_construction=ef_construction, ef_search=ef_search)
+
+
+@dataclass
+class Prepared:
+    """Everything an index needs for one (model, chunker) pair, embedded once."""
+
+    chunks: list[Chunk]
+    chunk_vectors: np.ndarray
+    query_ids: list[str]
+    query_vectors: np.ndarray
+    tokens: np.ndarray
+
+
+def prepare(
+    dataset: BeirDataset, chunker: Chunker, embedder: Embedder, cache_dir: Path = DEFAULT_CACHE_DIR
+) -> Prepared:
     chunks = chunk_documents(list(dataset.corpus.values()), chunker)
     texts = [c.text for c in chunks]
-
-    # Truncation: how much of the corpus the model never actually reads.
     tokens = np.array(embedder.count_tokens(texts))
-    truncated = float(np.mean(tokens > embedder.max_tokens))
-
     chunk_vectors = cached_embed(embedder, texts, cache_dir)
     query_ids = list(dataset.queries)
     query_texts = [embedder.query_prefix + dataset.queries[q] for q in query_ids]
     query_vectors = cached_embed(embedder, query_texts, cache_dir)
+    return Prepared(chunks, chunk_vectors, query_ids, query_vectors, tokens)
 
-    start = time.perf_counter()
-    index = FlatIndex(embedder.dim)
-    index.add(chunk_vectors)
-    build_seconds = time.perf_counter() - start
+
+def evaluate_index(
+    dataset: BeirDataset,
+    chunker: Chunker,
+    embedder: Embedder,
+    prepared: Prepared,
+    index_spec: str = "flat",
+    k_chunks: int = 100,
+    built: dict | None = None,
+) -> dict:
+    """Score one index over prepared vectors.
+
+    `built` caches indexes across calls: specs that differ only in ef_search
+    (a query-time setting) reuse the same graph instead of rebuilding it.
+    """
+    chunks, query_vectors = prepared.chunks, prepared.query_vectors
+
+    index = parse_index(index_spec, embedder.dim)
+    graph_key = index_spec.rsplit("-", 1)[0] if isinstance(index, HNSWIndex) else index_spec
+    if built is not None and graph_key in built:
+        cached, build_seconds = built[graph_key]
+        if isinstance(index, HNSWIndex):
+            cached.ef_search = index.ef_search
+        index = cached
+    else:
+        start = time.perf_counter()
+        index.add(prepared.chunk_vectors)
+        build_seconds = time.perf_counter() - start
+        if built is not None:
+            built[graph_key] = (index, build_seconds)
+
+    # Exact search is the answer key for approximate indexes (ANN recall).
+    exact = FlatIndex(embedder.dim)
+    exact.add(prepared.chunk_vectors)
 
     # One untimed search first, so one-off setup costs don't land in the latency numbers.
     index.search(query_vectors[0], k_chunks)
 
     results: dict[str, list[str]] = {}
-    latencies = []
-    for query_id, vector in zip(query_ids, query_vectors):
+    latencies, scored = [], []
+    found_true = total_true = 0
+    for query_id, vector in zip(prepared.query_ids, query_vectors):
         start = time.perf_counter()
         ids, _ = index.search(vector, k_chunks)
         latencies.append(time.perf_counter() - start)
+        scored.append(getattr(index, "scored_last_search", len(index)))
+        true_top = set(exact.search(vector, ANN_K)[0].tolist())
+        found_true += len(true_top & set(ids[:ANN_K].tolist()))
+        total_true += len(true_top)
         # Several chunks can share a document; keep each doc's best rank.
         results[query_id] = dedupe_docs(chunks[i].doc_id for i in ids)
 
+    tokens = prepared.tokens
     latencies_ms = np.array(latencies) * 1000
     return {
         "model": embedder.name,
         "chunker": chunker.name,
+        "index": index_spec,
         "n_docs": len(dataset.corpus),
         "n_chunks": len(chunks),
-        "n_queries": len(query_ids),
+        "n_queries": len(prepared.query_ids),
         "dim": embedder.dim,
         "k_chunks": k_chunks,
         "tokens_mean": round(float(tokens.mean()), 1),
         "tokens_max": int(tokens.max()),
         "max_tokens": embedder.max_tokens,
         "query_prefix": embedder.query_prefix,
-        "truncated_frac": round(truncated, 4),
+        # Truncation: how much of the corpus the model never actually reads.
+        "truncated_frac": round(float(np.mean(tokens > embedder.max_tokens)), 4),
         "metrics": {name: round(value, 4) for name, value in evaluate(results, dataset.qrels).items()},
+        # Share of the exact top-10 chunks the index also returned in its top 10.
+        "ann_recall@10": round(found_true / total_true, 4),
+        "scored_mean": round(float(np.mean(scored)), 1),
         "search_p50_ms": round(float(np.percentile(latencies_ms, 50)), 4),
         "search_p99_ms": round(float(np.percentile(latencies_ms, 99)), 4),
         "build_seconds": round(build_seconds, 4),
     }
+
+
+def run_experiment(
+    dataset: BeirDataset,
+    chunker: Chunker,
+    embedder: Embedder,
+    k_chunks: int = 100,
+    cache_dir: Path = DEFAULT_CACHE_DIR,
+    index_spec: str = "flat",
+) -> dict:
+    prepared = prepare(dataset, chunker, embedder, cache_dir)
+    return evaluate_index(dataset, chunker, embedder, prepared, index_spec, k_chunks)
 
 
 def git_info() -> dict:
@@ -153,16 +225,17 @@ def git_info() -> dict:
 def format_row(row: dict) -> str:
     m = row["metrics"]
     return (
-        f"{row['model'].split('/')[-1]:<24} {row['chunker']:<18} {row['n_chunks']:>6} "
+        f"{row['model'].split('/')[-1]:<24} {row['chunker']:<18} {row['index']:<16} {row['n_chunks']:>6} "
         f"{row['truncated_frac']:>6.1%} {m['recall@1']:>6.3f} {m['recall@5']:>6.3f} "
         f"{m['recall@10']:>6.3f} {m['mrr@10']:>6.3f} {m['ndcg@10']:>6.3f} "
+        f"{row['ann_recall@10']:>6.3f} {row['scored_mean']:>7.0f} "
         f"{row['search_p50_ms']:>7.3f} {row['search_p99_ms']:>7.3f}"
     )
 
 
 HEADER = (
-    f"{'model':<24} {'chunker':<18} {'chunks':>6} {'trunc':>6} {'R@1':>6} {'R@5':>6} "
-    f"{'R@10':>6} {'MRR':>6} {'nDCG':>6} {'p50ms':>7} {'p99ms':>7}"
+    f"{'model':<24} {'chunker':<18} {'index':<16} {'chunks':>6} {'trunc':>6} {'R@1':>6} {'R@5':>6} "
+    f"{'R@10':>6} {'MRR':>6} {'nDCG':>6} {'ANN@10':>6} {'scored':>7} {'p50ms':>7} {'p99ms':>7}"
 )
 
 
@@ -170,6 +243,7 @@ def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--model", choices=sorted(MODELS), default="minilm")
     parser.add_argument("--chunker", nargs="+", default=["whole"], help="e.g. whole fixed-200-40")
+    parser.add_argument("--index", nargs="+", default=["flat"], help="e.g. flat hnsw-16-200-64")
     parser.add_argument("--k-chunks", type=int, default=100)
     parser.add_argument("--out", type=Path, default=DEFAULT_OUT)
     parser.add_argument("--no-save", action="store_true", help="print results without recording them")
@@ -178,23 +252,25 @@ def main(argv: list[str] | None = None) -> None:
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     logging.getLogger("httpx").setLevel(logging.WARNING)  # model-hub request noise
     chunkers = [parse_chunker(spec) for spec in args.chunker]  # fail fast on typos
+    for spec in args.index:
+        parse_index(spec, dim=1)
     dataset = load_scifact()
     embedder = MODELS[args.model]()
     info = git_info()
 
-    rows = []
+    print("\n" + HEADER)  # rows print as they finish; HNSW builds can take minutes
     for chunker in chunkers:
-        row = run_experiment(dataset, chunker, embedder, args.k_chunks)
-        row.update(info, timestamp=time.strftime("%Y-%m-%dT%H:%M:%S"))
-        rows.append(row)
-        if not args.no_save:
-            args.out.parent.mkdir(parents=True, exist_ok=True)
-            with open(args.out, "a") as f:
-                f.write(json.dumps(row) + "\n")
+        prepared = prepare(dataset, chunker, embedder)  # embedded once, shared by every index
+        built: dict = {}
+        for spec in args.index:
+            row = evaluate_index(dataset, chunker, embedder, prepared, spec, args.k_chunks, built)
+            row.update(info, timestamp=time.strftime("%Y-%m-%dT%H:%M:%S"))
+            print(format_row(row), flush=True)
+            if not args.no_save:
+                args.out.parent.mkdir(parents=True, exist_ok=True)
+                with open(args.out, "a") as f:
+                    f.write(json.dumps(row) + "\n")
 
-    print("\n" + HEADER)
-    for row in rows:
-        print(format_row(row))
     if info["dirty"]:
         print("\nwarning: uncommitted changes; commit before recording numbers you plan to publish")
 
