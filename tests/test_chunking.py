@@ -1,13 +1,13 @@
 import pytest
 
-from anchor.chunking import (
+from vector.chunking import (
     FixedSizeChunker,
     RecursiveChunker,
     SentenceChunker,
     chunk_documents,
     split_sentences,
 )
-from anchor.data.beir import Document
+from vector.data.beir import Document
 
 
 def words(n: int, prefix: str = "w") -> str:
