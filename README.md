@@ -120,7 +120,7 @@ Median query time (recall@10 in parentheses), HNSW at ef_search = 64:
 | 1,000,000 | 15.1 ms | n/a | 0.24 ms (0.948) |
 
 - **Our HNSW overtakes exact search between 10K and 50K vectors.** At 250K it's **8× faster** at 0.974 recall (ef 64), or 4.4× faster at 0.994 (ef 128). As the data grew 25× (10K → 250K), exact search slowed 32× while our HNSW slowed 1.5×.
-- **Same algorithm quality as FAISS.** At every size and ef_search setting, our recall is within 0.005 of FAISS's, so the implementation matches the reference.
+- **Same algorithm quality as FAISS.** At every size and ef_search setting, our recall is within 0.008 of FAISS's (usually ≤ 0.005), so the implementation matches the reference.
 - **The remaining gap is the language.** FAISS is 4.7× faster per query at 250K and builds 34× faster (7.5 s vs 259 s): C++ with SIMD vs Python heaps and sets. At 1M, FAISS answers in 0.41 ms at 0.983 recall (ef 128), 37× faster than exact search.
 - **Bigger data needs a wider beam.** At fixed ef_search = 64, recall drifts from 0.997 (10K) to 0.948 (1M, FAISS); ef_search has to grow with the data to hold recall.
 - Exact search scores 0.999 at 1M, not 1.000, because of **ties**: SIFT1M has 14,538 groups of duplicate vectors, and the 6 "misses" out of 10,000 all have exactly the same score as the 10th result.
