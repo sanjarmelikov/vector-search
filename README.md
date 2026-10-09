@@ -164,6 +164,43 @@ R="--per-query --out results/phase5.jsonl"
 .venv/bin/python -m vector.eval.compare results/phase5.jsonl --base bge-small:whole:flat:none
 ```
 
+### Phase 6: the search service
+
+`python -m vector.service` serves the index over HTTP (FastAPI): `POST /query`, `POST /documents`, `POST /answer`, `GET /health`. bge-small embeddings, whole documents, the from-scratch HNSW index (M = 16, ef_search = 128).
+
+- **Incremental indexing:** new documents are chunked, embedded and linked into the live HNSW graph; a readers-writer lock keeps searches from seeing half-inserted nodes, and embedding happens outside the write lock.
+- **Persistence:** the index is saved as `.npz` (graph in CSR arrays, no pickle) plus a JSON chunk table, swapped in atomically, and saved before `POST /documents` returns. Measured: the first start builds SciFact's index in **81 s**; restarts load it in **under 0.1 s**, and documents added over HTTP survive a restart.
+- **Per-request timing** is returned with each answer. Steady state on this laptop: about **13 ms to embed** the query, about **1.3 ms to search** 5,184 documents.
+
+### Phase 7: load testing, micro-batching, and rate limiting
+
+Closed-loop load test (`python -m vector.service.loadtest`): N clients each send SciFact claims back to back for 15 s. Same server, 64 request threads, toggled only by `--no-batching`.
+
+| Clients | Without batching | With micro-batching |
+|---:|---|---|
+| 1 | 88 req/s, p50 11 ms, p99 16 ms | 88 req/s, p50 11 ms, p99 13 ms |
+| 4 | 94 req/s, p50 43 ms, p99 46 ms | 134 req/s, p50 29 ms, p99 38 ms |
+| 16 | 93 req/s, p50 171 ms, p99 182 ms | 232 req/s, p50 66 ms, p99 99 ms |
+| 64 | 93 req/s, p50 684 ms, p99 698 ms | **299 req/s, p50 203 ms, p99 359 ms** |
+
+- **Bottleneck found by measurement:** query embedding is about 90% of each request and the model runs one call at a time, so throughput was flat at about 93 req/s whatever the load; latency just grew with the queue (64 clients ÷ 93 req/s ≈ 0.69 s ≈ the measured p50).
+- **Fix: micro-batching.** A batcher thread embeds every query waiting at that moment in one model call (average 3.9 per call at full load). Throughput rose **3.2×** at 64 clients and p99 fell from 698 to 359 ms. A first version waited 2 ms to fill batches, which doubled single-client latency (11 → 21 ms); taking only what's already queued kept the 1-client case unchanged.
+- **Rate limiting:** a token bucket per API key (cost-aware: query 1, re-ranked query 5, answer 20, add documents 10). With 20 tokens/s and burst 40, 16 clients sharing one key got **22.6 req/s** through (theory: (40 + 20×15)/15 = 22.7) and 12,529 instant 429s with `Retry-After`. With 16 separate keys, no one was limited.
+
+Rows: `results/phase7.jsonl` (commits `4a5c027`, `a957bdd`, `1e5ccf6`). Reproduce:
+
+```bash
+.venv/bin/pip install -e '.[service]'
+.venv/bin/python -m vector.service --no-batching &   # then without the flag
+.venv/bin/python -m vector.service.loadtest --concurrency 1 4 16 64 --duration 15
+.venv/bin/python -m vector.service --rate 20 --burst 40 &
+.venv/bin/python -m vector.service.loadtest --concurrency 16 --duration 15 --shared-key
+```
+
+### Phase 8: grounded answers (built, not yet run live)
+
+`POST /answer` retrieves the top 5 documents, sends them to an OpenAI chat model as numbered sources with the instruction to answer only from them and cite [n], then checks every citation against the sources it sent; citations to non-existent sources are returned in `invalid_citations`. It's tested end to end with a fake client. **Live answers need `OPENAI_API_KEY` in `.env`**; start with `python -m vector.service --answer`.
+
 ## Roadmap
 
 - [x] BEIR dataset loader
@@ -176,8 +213,9 @@ R="--per-query --out results/phase5.jsonl"
 - [x] FAISS HNSW comparison (SIFT1M)
 - [x] Chunking × embedding-model sweep (local models; OpenAI pending)
 - [x] Re-ranking (measured: no significant gain)
-- [ ] FastAPI service, persistence, incremental indexing
-- [ ] Throttle integration and load testing
+- [x] FastAPI service, persistence, incremental indexing
+- [x] Rate limiting and load testing (Throttle dropped; built-in token bucket)
+- [x] Grounded answers with citation checking (live run pending an API key)
 
 ## Development
 
