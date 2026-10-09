@@ -45,3 +45,13 @@ def test_parse_chunker():
     for bad in ("fixed", "fixed-200", "semantic-200-40", "fixed-a-b"):
         with pytest.raises(ValueError):
             parse_chunker(bad)
+
+
+def test_query_prefix_applies_to_queries_only(dataset, bow, tmp_path):
+    # The prefix "banana banana " pulls every query toward d3. q2 ("cherry") now
+    # ranks d3 > d1 > d2, so its answer drops to rank 3; documents are untouched.
+    bow.query_prefix = "banana banana "
+    row = run_experiment(dataset, WholeDocumentChunker(), bow, k_chunks=10, cache_dir=tmp_path)
+    assert row["query_prefix"] == "banana banana "
+    assert row["truncated_frac"] == pytest.approx(1 / 3, abs=1e-4)
+    assert row["metrics"]["mrr@10"] == pytest.approx((1 + 1 / 3 + 1 / 2) / 3, abs=1e-4)

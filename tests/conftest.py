@@ -14,6 +14,7 @@ class BagOfWordsEmbedder:
         self.name = name
         self.dim = len(vocab)
         self.max_tokens = 3
+        self.query_prefix = ""
         self.calls = 0
 
     def embed(self, texts: list[str]) -> np.ndarray:
