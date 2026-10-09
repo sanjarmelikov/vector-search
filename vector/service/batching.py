@@ -8,8 +8,10 @@ queue; one background thread takes whatever is waiting (up to `max_batch`,
 waiting at most `max_wait_ms` for more to arrive), embeds them in one call,
 and hands each request its own vector.
 
-Under light load a request waits at most `max_wait_ms` extra; under heavy load
-batches fill up and throughput rises with them.
+With max_wait_ms = 0 (the default) the batcher never waits on purpose: it takes
+whatever piled up while the previous batch was running. A lone request goes
+straight to the model, and under load batches form by themselves. A positive
+max_wait_ms trades a little latency for fuller batches.
 """
 
 from __future__ import annotations
@@ -23,7 +25,7 @@ import numpy as np
 
 
 class EmbeddingBatcher:
-    def __init__(self, embed, max_batch: int = 32, max_wait_ms: float = 2.0, lock: threading.Lock | None = None):
+    def __init__(self, embed, max_batch: int = 32, max_wait_ms: float = 0.0, lock: threading.Lock | None = None):
         self._embed = embed  # function: list[str] -> (n, dim) array
         self.max_batch = max_batch
         self.max_wait = max_wait_ms / 1000
@@ -46,10 +48,11 @@ class EmbeddingBatcher:
             deadline = time.perf_counter() + self.max_wait
             while len(batch) < self.max_batch:
                 remaining = deadline - time.perf_counter()
-                if remaining <= 0:
-                    break
                 try:
-                    batch.append(self._queue.get(timeout=remaining))
+                    if remaining > 0:
+                        batch.append(self._queue.get(timeout=remaining))
+                    else:
+                        batch.append(self._queue.get_nowait())  # take what's already waiting
                 except queue.Empty:
                     break
             texts = [t for t, _ in batch]

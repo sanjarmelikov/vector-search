@@ -21,7 +21,7 @@ class SlowEmbedder:
 
 def test_each_caller_gets_its_own_vector_and_calls_are_batched():
     model = SlowEmbedder()
-    batcher = EmbeddingBatcher(model, max_batch=32, max_wait_ms=5)
+    batcher = EmbeddingBatcher(model, max_batch=32)  # no deliberate wait: batches form while busy
     results = {}
 
     def ask(i):
@@ -56,3 +56,14 @@ def test_model_errors_reach_every_waiting_caller():
     # The batcher thread survives the error and keeps serving.
     good = EmbeddingBatcher(SlowEmbedder())
     assert good.embed("abc")[0] == 3.0
+
+
+def test_deliberate_wait_collects_more_per_batch():
+    model = SlowEmbedder()
+    batcher = EmbeddingBatcher(model, max_batch=32, max_wait_ms=50)
+    threads = [threading.Thread(target=batcher.embed, args=("x",)) for _ in range(10)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert model.calls == [10]  # all arrived within the 50 ms window: one call
