@@ -57,10 +57,12 @@ nDCG@10 (best per model in bold):
 | recursive 150 / 30 | 0.654 | 10.1% | 0.717 | 0% |
 | recursive 200 / 40 | 0.651 | 44.7% | 0.708 | 0% |
 
-- **The model matters far more than chunking.** bge-small on whole documents (0.713) beats every MiniLM configuration (best 0.674). Across all ten bge-small configurations, nDCG@10 spans only 0.704–0.726.
-- **For MiniLM, chunking mostly fixes truncation.** All three 100-word configurations (≤0.2% truncated) beat every larger one. bge-small reads 512 tokens, so whole abstracts are rarely cut (8.8%) and chunking has little left to fix.
+- **The model matters far more than chunking.** bge-small on whole documents (0.713) beats every MiniLM configuration, including MiniLM's best (0.674): Δ = +0.039, 95% CI [+0.013, +0.065], p = 0.004 (paired randomization test).
+- **For MiniLM, chunking mostly fixes truncation, but the evidence is moderate.** All three 100-word configurations (≤0.2% truncated) score above every larger one. The best, fixed-100-20, beats whole documents by +0.029, 95% CI [+0.006, +0.051], p = 0.011, but p = 0.10 after Holm correction across the 9 chunkers compared.
+- **For bge-small, chunking makes no detectable difference.** It reads 512 tokens (whole abstracts truncated only 8.8%), and no chunker differs from whole documents (all Holm-corrected p ≥ 0.85; the "best", sentence-150-30 at +0.013, has p = 0.09 uncorrected).
 - **Recursive ≈ sentence on this data.** Every SciFact document's only paragraph break is between title and abstract, so the recursive splitter falls through to sentences.
-- **Caveat:** scores are deterministic, but 300 queries is a small sample. A gap of about 0.01 nDCG can come from a handful of queries, so the ordering among bge-small chunkers isn't established without a significance test.
+
+Significance: per-query nDCG@10 in `results/phase2_per_query.jsonl` (same numbers as `phase2.jsonl`), compared with `python -m vector.eval.compare results/phase2_per_query.jsonl --base bge-small:whole` (paired randomization test, bootstrap CI, Holm correction).
 
 Full table: `python -m vector.eval.report results/phase2.jsonl`. Reproduce:
 
