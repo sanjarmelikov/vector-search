@@ -1,21 +1,7 @@
 import pytest
 
 from vector.chunking import FixedSizeChunker, WholeDocumentChunker
-from vector.data.beir import BeirDataset, Document
 from vector.eval.run import parse_chunker, run_experiment
-
-
-@pytest.fixture
-def dataset():
-    corpus = {
-        "d1": Document("d1", "", "apple banana"),
-        "d2": Document("d2", "", "cherry"),
-        "d3": Document("d3", "", "banana banana cherry date"),
-    }
-    queries = {"q1": "apple", "q2": "cherry", "q3": "banana"}
-    # q3's labeled answer is d1, but d3 mentions banana more, so d1 lands at rank 2.
-    qrels = {"q1": {"d1": 1}, "q2": {"d2": 1}, "q3": {"d1": 1}}
-    return BeirDataset(corpus, queries, qrels)
 
 
 def test_whole_documents(dataset, bow, tmp_path):
