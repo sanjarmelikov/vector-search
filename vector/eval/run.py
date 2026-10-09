@@ -32,7 +32,7 @@ from vector.chunking import (
 from vector.data.beir import BeirDataset, load_scifact
 from vector.embed.base import Embedder
 from vector.embed.cache import DEFAULT_CACHE_DIR, cached_embed
-from vector.eval.metrics import dedupe_docs, evaluate
+from vector.eval.metrics import dedupe_docs, evaluate, per_query_ndcg
 from vector.index import FlatIndex, HNSWIndex, VectorIndex
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -125,6 +125,7 @@ def evaluate_index(
     index_spec: str = "flat",
     k_chunks: int = 100,
     built: dict | None = None,
+    per_query: bool = False,
 ) -> dict:
     """Score one index over prepared vectors.
 
@@ -170,7 +171,7 @@ def evaluate_index(
 
     tokens = prepared.tokens
     latencies_ms = np.array(latencies) * 1000
-    return {
+    row = {
         "model": embedder.name,
         "chunker": chunker.name,
         "index": index_spec,
@@ -193,6 +194,9 @@ def evaluate_index(
         "search_p99_ms": round(float(np.percentile(latencies_ms, 99)), 4),
         "build_seconds": round(build_seconds, 4),
     }
+    if per_query:  # for paired significance tests (vector/eval/compare.py)
+        row["per_query_ndcg@10"] = {q: round(v, 4) for q, v in per_query_ndcg(results, dataset.qrels).items()}
+    return row
 
 
 def run_experiment(
@@ -247,6 +251,7 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--k-chunks", type=int, default=100)
     parser.add_argument("--out", type=Path, default=DEFAULT_OUT)
     parser.add_argument("--no-save", action="store_true", help="print results without recording them")
+    parser.add_argument("--per-query", action="store_true", help="also record each query's nDCG@10")
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(message)s")
@@ -263,7 +268,9 @@ def main(argv: list[str] | None = None) -> None:
         prepared = prepare(dataset, chunker, embedder)  # embedded once, shared by every index
         built: dict = {}
         for spec in args.index:
-            row = evaluate_index(dataset, chunker, embedder, prepared, spec, args.k_chunks, built)
+            row = evaluate_index(
+                dataset, chunker, embedder, prepared, spec, args.k_chunks, built, args.per_query
+            )
             row.update(info, timestamp=time.strftime("%Y-%m-%dT%H:%M:%S"))
             print(format_row(row), flush=True)
             if not args.no_save:

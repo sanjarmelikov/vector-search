@@ -110,3 +110,14 @@ def test_ef_search_sweep_reuses_the_graph(dataset, bow, tmp_path):
     assert list(built) == ["hnsw-4-16"]  # one graph, two ef_search settings
     assert a["build_seconds"] == b["build_seconds"]
     assert built["hnsw-4-16"][0].ef_search == 32
+
+
+def test_per_query_scores_average_to_the_reported_ndcg(dataset, bow, tmp_path):
+    from vector.eval.run import evaluate_index, prepare
+
+    prepared = prepare(dataset, WholeDocumentChunker(), bow, tmp_path)
+    row = evaluate_index(dataset, WholeDocumentChunker(), bow, prepared, per_query=True)
+    scores = row["per_query_ndcg@10"]
+    assert set(scores) == {"q1", "q2", "q3"}
+    assert sum(scores.values()) / 3 == pytest.approx(row["metrics"]["ndcg@10"], abs=1e-3)
+    assert "per_query_ndcg@10" not in run_experiment(dataset, WholeDocumentChunker(), bow, cache_dir=tmp_path)
