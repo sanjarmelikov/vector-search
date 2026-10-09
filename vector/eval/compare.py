@@ -66,14 +66,21 @@ def label(row: dict) -> str:
 def matches(row: dict, selector: str) -> bool:
     """'model[:chunker[:index]]', where model is a substring, e.g. 'bge-small:whole'."""
     parts = selector.split(":")
-    if parts[0] not in row["model"]:
+    if parts[0].lower() not in row["model"].lower():
         return False
     if len(parts) > 1 and parts[1] != row["chunker"]:
         return False
     return len(parts) < 3 or parts[2] == row.get("index", "flat")
 
 
-def compare(rows: list[dict], base_selector: str, alpha: float = 0.05) -> str:
+def compare(
+    rows: list[dict], base_selector: str, against: str | None = None, alpha: float = 0.05
+) -> str:
+    """Test every row matching `against` (default: the baseline's model) against the baseline.
+
+    Only the comparisons actually made count toward the Holm correction, so
+    keep `against` to the question being asked.
+    """
     rows = [r for r in rows if FIELD in r]
     bases = [r for r in rows if matches(r, base_selector)]
     if len(bases) != 1:
@@ -82,7 +89,8 @@ def compare(rows: list[dict], base_selector: str, alpha: float = 0.05) -> str:
     queries = sorted(base[FIELD])
     a = np.array([base[FIELD][q] for q in queries])
 
-    others = [r for r in rows if r is not base and sorted(r[FIELD]) == queries]
+    against = against or base_selector.split(":")[0]
+    others = [r for r in rows if r is not base and matches(r, against) and sorted(r[FIELD]) == queries]
     tests = []
     for row in others:
         b = np.array([row[FIELD][q] for q in queries])
@@ -109,9 +117,10 @@ def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("path", type=Path)
     parser.add_argument("--base", required=True, help="baseline, e.g. 'bge-small:whole' or 'minilm:fixed-100-20:flat'")
+    parser.add_argument("--against", help="which rows to test (selector); default: the baseline's model")
     parser.add_argument("--alpha", type=float, default=0.05)
     args = parser.parse_args(argv)
-    print(compare(load_rows(args.path), args.base, args.alpha))
+    print(compare(load_rows(args.path), args.base, args.against, args.alpha))
 
 
 if __name__ == "__main__":

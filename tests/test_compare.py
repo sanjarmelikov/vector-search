@@ -50,3 +50,12 @@ def test_compare_table_and_selector_errors():
     assert "no clear difference" in table.splitlines()[-1]  # 'same' sorts last
     with pytest.raises(ValueError):
         compare(rows, "bge-small")  # matches all three rows
+
+
+def test_default_compares_only_the_baselines_model_case_insensitively():
+    base = np.random.default_rng(3).random(50)
+    other_model = dict(row("whole", base + 0.1), model="org/other-model")
+    rows = [row("whole", base), row("fixed", base), other_model]
+    table = compare(rows, "BGE-SMALL:whole")
+    assert "other-model" not in table and "bge-small:fixed:flat" in table
+    assert "other-model" in compare(rows, "bge-small:whole", against="other")
