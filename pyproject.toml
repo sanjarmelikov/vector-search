@@ -15,7 +15,7 @@ embed = [
     "tiktoken>=0.7",
     "python-dotenv>=1",
 ]
-bench = ["faiss-cpu>=1.9"]
+bench = ["faiss-cpu>=1.9", "matplotlib>=3.8"]
 
 [build-system]
 requires = ["setuptools>=68"]
