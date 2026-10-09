@@ -75,3 +75,49 @@ def test_untracked_files_do_not_make_runs_dirty(tmp_path, monkeypatch):
     assert run.git_info()["dirty"] is False
     (tmp_path / "code.py").write_text("x = 2\n")  # tracked change
     assert run.git_info()["dirty"] is True
+
+
+def test_hnsw_index_spec_and_ann_recall(dataset, bow, tmp_path):
+    flat = run_experiment(dataset, WholeDocumentChunker(), bow, k_chunks=10, cache_dir=tmp_path)
+    hnsw = run_experiment(
+        dataset, WholeDocumentChunker(), bow, k_chunks=10, cache_dir=tmp_path, index_spec="hnsw-4-16-16"
+    )
+    assert flat["index"] == "flat" and flat["ann_recall@10"] == pytest.approx(1.0)
+    # Three documents: the beam covers the whole graph, so HNSW must match exact search.
+    assert hnsw["index"] == "hnsw-4-16-16" and hnsw["ann_recall@10"] == pytest.approx(1.0)
+    assert hnsw["metrics"] == flat["metrics"]
+
+
+def test_parse_index():
+    from vector.eval.run import parse_index
+    from vector.index import FlatIndex, HNSWIndex
+
+    assert isinstance(parse_index("flat", 8), FlatIndex)
+    index = parse_index("hnsw-16-200-64", 8)
+    assert isinstance(index, HNSWIndex) and (index.M, index.ef_construction, index.ef_search) == (16, 200, 64)
+    for bad in ("hnsw", "hnsw-16-200", "ivf-1-2-3", "hnsw-a-b-c"):
+        with pytest.raises(ValueError):
+            parse_index(bad, 8)
+
+
+def test_ef_search_sweep_reuses_the_graph(dataset, bow, tmp_path):
+    from vector.eval.run import evaluate_index, prepare
+
+    prepared = prepare(dataset, WholeDocumentChunker(), bow, tmp_path)
+    built: dict = {}
+    a = evaluate_index(dataset, WholeDocumentChunker(), bow, prepared, "hnsw-4-16-8", 10, built)
+    b = evaluate_index(dataset, WholeDocumentChunker(), bow, prepared, "hnsw-4-16-32", 10, built)
+    assert list(built) == ["hnsw-4-16"]  # one graph, two ef_search settings
+    assert a["build_seconds"] == b["build_seconds"]
+    assert built["hnsw-4-16"][0].ef_search == 32
+
+
+def test_per_query_scores_average_to_the_reported_ndcg(dataset, bow, tmp_path):
+    from vector.eval.run import evaluate_index, prepare
+
+    prepared = prepare(dataset, WholeDocumentChunker(), bow, tmp_path)
+    row = evaluate_index(dataset, WholeDocumentChunker(), bow, prepared, per_query=True)
+    scores = row["per_query_ndcg@10"]
+    assert set(scores) == {"q1", "q2", "q3"}
+    assert sum(scores.values()) / 3 == pytest.approx(row["metrics"]["ndcg@10"], abs=1e-3)
+    assert "per_query_ndcg@10" not in run_experiment(dataset, WholeDocumentChunker(), bow, cache_dir=tmp_path)
