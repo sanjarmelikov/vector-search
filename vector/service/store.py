@@ -22,6 +22,7 @@ from vector.embed.base import Embedder
 from vector.eval.metrics import dedupe_docs
 from vector.index.hnsw import HNSWIndex
 from vector.rerank import Reranker, rerank
+from vector.service.batching import EmbeddingBatcher
 
 
 class RWLock:
@@ -80,6 +81,7 @@ class SearchStore:
         reranker: Reranker | None = None,
         k_chunks: int = 100,
         rerank_depth: int = 50,
+        batch_queries: bool = True,
     ):
         self.embedder = embedder
         self.chunker = chunker
@@ -94,6 +96,10 @@ class SearchStore:
         self._model_lock = threading.Lock()
         # One add at a time, so two requests can't both add the same new document.
         self._add_lock = threading.Lock()
+        # Concurrent queries get embedded together in one model call (see batching.py).
+        self._batcher = (
+            EmbeddingBatcher(embedder.embed, lock=self._model_lock) if batch_queries else None
+        )
 
     # ---- writes ----
 
@@ -118,8 +124,11 @@ class SearchStore:
     def query(self, text: str, k: int = 10, use_rerank: bool = False) -> tuple[list[Hit], dict[str, float]]:
         timings: dict[str, float] = {}
         start = time.perf_counter()
-        with self._model_lock:
-            vector = self.embedder.embed([self.embedder.query_prefix + text])[0]
+        if self._batcher is not None:
+            vector = self._batcher.embed(self.embedder.query_prefix + text)
+        else:
+            with self._model_lock:
+                vector = self.embedder.embed([self.embedder.query_prefix + text])[0]
         timings["embed_ms"] = (time.perf_counter() - start) * 1000
 
         start = time.perf_counter()
@@ -148,7 +157,10 @@ class SearchStore:
 
     def stats(self) -> dict:
         with self._lock.read():
-            return {"documents": len(self.titles), "chunks": len(self.chunks)}
+            out = {"documents": len(self.titles), "chunks": len(self.chunks)}
+        if self._batcher is not None and self._batcher.batches:
+            out["mean_query_batch"] = round(self._batcher.texts / self._batcher.batches, 2)
+        return out
 
     # ---- persistence ----
 

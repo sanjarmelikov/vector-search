@@ -40,7 +40,8 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--burst", type=float, help="rate limit: bucket capacity (default 2 x rate)")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8000)
-    parser.add_argument("--workers-threads", type=int, default=8, help="thread pool size for requests")
+    parser.add_argument("--workers-threads", type=int, default=64, help="thread pool size for requests")
+    parser.add_argument("--no-batching", action="store_true", help="embed each query alone (for comparison)")
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
@@ -51,10 +52,11 @@ def main(argv: list[str] | None = None) -> None:
 
     start = time.perf_counter()
     if (save_dir / "meta.json").exists():
-        store = SearchStore.load(save_dir, embedder, chunker, reranker=reranker)
+        store = SearchStore.load(save_dir, embedder, chunker, reranker=reranker, batch_queries=not args.no_batching)
         log.info("loaded %d chunks from %s in %.1fs", len(store.chunks), save_dir, time.perf_counter() - start)
     else:
-        store = SearchStore(embedder, chunker, HNSWIndex(embedder.dim, M=16, ef_construction=100), reranker)
+        store = SearchStore(embedder, chunker, HNSWIndex(embedder.dim, M=16, ef_construction=100), reranker,
+                            batch_queries=not args.no_batching)
         if not args.no_preload:
             log.info("building index over SciFact (first start only)...")
             store.add_documents(list(load_scifact().corpus.values()))

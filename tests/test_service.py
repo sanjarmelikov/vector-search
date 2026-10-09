@@ -67,7 +67,8 @@ def test_save_and_load_round_trip(store, bow, tmp_path):
     loaded = SearchStore.load(tmp_path / "idx", bow, WholeDocumentChunker())
     after, _ = loaded.query("banana", k=3)
     assert [h.doc_id for h in after] == [h.doc_id for h in before]
-    assert loaded.stats() == {"documents": 3, "chunks": 3}
+    stats = loaded.stats()
+    assert (stats["documents"], stats["chunks"]) == (3, 3)
     # The loaded index keeps working as a live index: new documents get linked in.
     loaded.add_documents([Document("d4", "", "apple apple")])
     assert loaded.query("apple", k=1)[0][0].doc_id in {"d1", "d4"}
