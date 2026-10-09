@@ -101,6 +101,40 @@ Reproduce:
     --index flat hnsw-16-200-100 hnsw-16-200-200 hnsw-8-100-100 --out results/phase3.jsonl
 ```
 
+### Phase 4: speed at scale: exact vs our HNSW vs FAISS (SIFT1M)
+
+SciFact is too small to show what HNSW is for, so this phase uses **SIFT1M** (1M image descriptors, 128 dimensions), searched by cosine like the rest of the project. Exact search over the first *n* vectors is the answer key; 1,000 queries, k = 10, one query at a time, single thread. HNSW: M = 16, ef_construction = 100, both implementations. Our Python HNSW stops at 250K (its graph would need about 1.5 GB of RAM at 1M on this 8 GB laptop); exact and FAISS go to 1M.
+
+![Median query time vs number of vectors](results/latency_vs_size.svg)
+
+![Recall vs query time at 250K vectors](results/recall_vs_latency.svg)
+
+Median query time (recall@10 in parentheses), HNSW at ef_search = 64:
+
+| Vectors | Exact (NumPy) | Our HNSW (Python) | FAISS HNSW (C++) |
+|---:|---:|---:|---:|
+| 10,000 | 0.13 ms (1.000) | 0.35 ms (0.997) | 0.035 ms (0.997) |
+| 50,000 | 0.67 ms (1.000) | 0.45 ms (0.992) | 0.055 ms (0.991) |
+| 100,000 | 1.55 ms (1.000) | 0.49 ms (0.985) | 0.077 ms (0.984) |
+| 250,000 | 4.19 ms (1.000) | **0.53 ms (0.974)** | 0.112 ms (0.974) |
+| 1,000,000 | 15.1 ms | n/a | 0.24 ms (0.948) |
+
+- **Our HNSW overtakes exact search between 10K and 50K vectors.** At 250K it's **8× faster** at 0.974 recall (ef 64), or 4.4× faster at 0.994 (ef 128). As the data grew 25× (10K → 250K), exact search slowed 32× while our HNSW slowed 1.5×.
+- **Same algorithm quality as FAISS.** At every size and ef_search setting, our recall is within 0.005 of FAISS's, so the implementation matches the reference.
+- **The remaining gap is the language.** FAISS is 4.7× faster per query at 250K and builds 34× faster (7.5 s vs 259 s): C++ with SIMD vs Python heaps and sets. At 1M, FAISS answers in 0.41 ms at 0.983 recall (ef 128), 37× faster than exact search.
+- **Bigger data needs a wider beam.** At fixed ef_search = 64, recall drifts from 0.997 (10K) to 0.948 (1M, FAISS); ef_search has to grow with the data to hold recall.
+- Exact search scores 0.999 at 1M, not 1.000, because of **ties**: SIFT1M has 14,538 groups of duplicate vectors, and the 6 "misses" out of 10,000 all have exactly the same score as the 10th result.
+
+Full table: `results/phase4.jsonl` (commits `7a7ed10` / `3c7b563`, identical benchmark code). Reproduce (needs `pip install -e '.[bench]'`; about 15 minutes, SIFT downloads about 160 MB):
+
+```bash
+H="flat hnsw-16-100-16 hnsw-16-100-32 hnsw-16-100-64 hnsw-16-100-128"
+F="faiss-hnsw-16-100-16 faiss-hnsw-16-100-32 faiss-hnsw-16-100-64 faiss-hnsw-16-100-128"
+.venv/bin/python -m vector.eval.bench --n 10000 50000 100000 250000 --index $H $F
+.venv/bin/python -m vector.eval.bench --n 1000000 --index flat $F
+.venv/bin/python -m vector.eval.plot results/phase4.jsonl
+```
+
 ## Roadmap
 
 - [x] BEIR dataset loader
@@ -110,7 +144,7 @@ Reproduce:
 - [x] Embeddings: local sentence-transformers + OpenAI, cached to disk
 - [x] Exact-search baseline on SciFact (MiniLM)
 - [x] From-scratch HNSW index
-- [ ] FAISS HNSW comparison
+- [x] FAISS HNSW comparison (SIFT1M)
 - [x] Chunking × embedding-model sweep (local models; OpenAI pending)
 - [ ] Re-ranking
 - [ ] FastAPI service, persistence, incremental indexing
