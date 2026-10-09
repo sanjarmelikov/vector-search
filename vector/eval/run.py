@@ -34,6 +34,7 @@ from vector.embed.base import Embedder
 from vector.embed.cache import DEFAULT_CACHE_DIR, cached_embed
 from vector.eval.metrics import dedupe_docs, evaluate, per_query_ndcg
 from vector.index import FlatIndex, HNSWIndex, VectorIndex
+from vector.rerank import RERANKERS, Reranker, rerank
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_OUT = REPO_ROOT / "results" / "phase1.jsonl"
@@ -60,6 +61,12 @@ def _openai_small() -> Embedder:
     from vector.embed.openai_api import OpenAIEmbedder
 
     return OpenAIEmbedder("text-embedding-3-small")
+
+
+def _load_reranker(name: str) -> Reranker:
+    from vector.rerank import CrossEncoderReranker
+
+    return CrossEncoderReranker(RERANKERS[name])
 
 
 MODELS: dict[str, Callable[[], Embedder]] = {
@@ -153,6 +160,8 @@ def evaluate_index(
     k_chunks: int = 100,
     built: dict | None = None,
     per_query: bool = False,
+    reranker: Reranker | None = None,
+    rerank_depth: int = 50,
 ) -> dict:
     """Score one index over prepared vectors.
 
@@ -171,7 +180,7 @@ def evaluate_index(
     index.search(query_vectors[0], k_chunks)
 
     results: dict[str, list[str]] = {}
-    latencies, scored = [], []
+    latencies, rerank_latencies, scored = [], [], []
     found_true = total_true = 0
     for query_id, vector in zip(prepared.query_ids, query_vectors):
         start = time.perf_counter()
@@ -181,6 +190,13 @@ def evaluate_index(
         true_top = set(exact.search(vector, ANN_K)[0].tolist())
         found_true += len(true_top & set(ids[:ANN_K].tolist()))
         total_true += len(true_top)
+        ids = ids.tolist()
+        if reranker is not None:
+            # The cross-encoder reads the raw query (no embedding prefix) with each chunk's text.
+            start = time.perf_counter()
+            scores = reranker.score(dataset.queries[query_id], [chunks[i].text for i in ids[:rerank_depth]])
+            ids = rerank(ids, scores, rerank_depth)
+            rerank_latencies.append(time.perf_counter() - start)
         # Several chunks can share a document; keep each doc's best rank.
         results[query_id] = dedupe_docs(chunks[i].doc_id for i in ids)
 
@@ -208,7 +224,13 @@ def evaluate_index(
         "search_p50_ms": round(float(np.percentile(latencies_ms, 50)), 4),
         "search_p99_ms": round(float(np.percentile(latencies_ms, 99)), 4),
         "build_seconds": round(build_seconds, 4),
+        "rerank": reranker.name if reranker else None,
+        "rerank_depth": rerank_depth if reranker else None,
     }
+    if rerank_latencies:
+        rerank_ms = np.array(rerank_latencies) * 1000
+        row["rerank_p50_ms"] = round(float(np.percentile(rerank_ms, 50)), 2)
+        row["rerank_p99_ms"] = round(float(np.percentile(rerank_ms, 99)), 2)
     if per_query:  # for paired significance tests (vector/eval/compare.py)
         row["per_query_ndcg@10"] = {q: round(v, 4) for q, v in per_query_ndcg(results, dataset.qrels).items()}
     return row
@@ -244,7 +266,8 @@ def git_info() -> dict:
 def format_row(row: dict) -> str:
     m = row["metrics"]
     return (
-        f"{row['model'].split('/')[-1]:<24} {row['chunker']:<18} {row['index']:<16} {row['n_chunks']:>6} "
+        f"{row['model'].split('/')[-1]:<24} {row['chunker']:<18} {row['index']:<16} "
+        f"{(row['rerank'] or '-').split('/')[-1][:20]:<20} {row['n_chunks']:>6} "
         f"{row['truncated_frac']:>6.1%} {m['recall@1']:>6.3f} {m['recall@5']:>6.3f} "
         f"{m['recall@10']:>6.3f} {m['mrr@10']:>6.3f} {m['ndcg@10']:>6.3f} "
         f"{row['ann_recall@10']:>6.3f} {row['scored_mean']:>7.0f} "
@@ -253,7 +276,7 @@ def format_row(row: dict) -> str:
 
 
 HEADER = (
-    f"{'model':<24} {'chunker':<18} {'index':<16} {'chunks':>6} {'trunc':>6} {'R@1':>6} {'R@5':>6} "
+    f"{'model':<24} {'chunker':<18} {'index':<16} {'rerank':<20} {'chunks':>6} {'trunc':>6} {'R@1':>6} {'R@5':>6} "
     f"{'R@10':>6} {'MRR':>6} {'nDCG':>6} {'ANN@10':>6} {'scored':>7} {'p50ms':>7} {'p99ms':>7}"
 )
 
@@ -267,6 +290,9 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--out", type=Path, default=DEFAULT_OUT)
     parser.add_argument("--no-save", action="store_true", help="print results without recording them")
     parser.add_argument("--per-query", action="store_true", help="also record each query's nDCG@10")
+    parser.add_argument("--rerank", nargs="+", default=["none"], choices=["none", *RERANKERS],
+                        help="cross-encoder(s) to re-order the top chunks with")
+    parser.add_argument("--rerank-depth", type=int, default=50, help="how many top chunks to re-rank")
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(message)s")
@@ -276,6 +302,7 @@ def main(argv: list[str] | None = None) -> None:
         parse_index(spec, dim=1)
     dataset = load_scifact()
     embedder = MODELS[args.model]()
+    rerankers = {name: None if name == "none" else _load_reranker(name) for name in args.rerank}
     info = git_info()
 
     print("\n" + HEADER)  # rows print as they finish; HNSW builds can take minutes
@@ -283,15 +310,18 @@ def main(argv: list[str] | None = None) -> None:
         prepared = prepare(dataset, chunker, embedder)  # embedded once, shared by every index
         built: dict = {}
         for spec in args.index:
-            row = evaluate_index(
-                dataset, chunker, embedder, prepared, spec, args.k_chunks, built, args.per_query
-            )
-            row.update(info, timestamp=time.strftime("%Y-%m-%dT%H:%M:%S"))
-            print(format_row(row), flush=True)
-            if not args.no_save:
-                args.out.parent.mkdir(parents=True, exist_ok=True)
-                with open(args.out, "a") as f:
-                    f.write(json.dumps(row) + "\n")
+            for rr_name in args.rerank:
+                reranker = rerankers[rr_name]
+                row = evaluate_index(
+                    dataset, chunker, embedder, prepared, spec, args.k_chunks, built,
+                    args.per_query, reranker, args.rerank_depth,
+                )
+                row.update(info, timestamp=time.strftime("%Y-%m-%dT%H:%M:%S"))
+                print(format_row(row), flush=True)
+                if not args.no_save:
+                    args.out.parent.mkdir(parents=True, exist_ok=True)
+                    with open(args.out, "a") as f:
+                        f.write(json.dumps(row) + "\n")
 
     if info["dirty"]:
         print("\nwarning: uncommitted changes; commit before recording numbers you plan to publish")
