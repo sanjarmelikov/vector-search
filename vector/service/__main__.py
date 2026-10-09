@@ -70,14 +70,7 @@ def main(argv: list[str] | None = None) -> None:
         from vector.generate import OpenAIAnswerer
 
         answerer = OpenAIAnswerer()
-    app = create_app(store, limiter, save_dir, answerer)
-
-    import anyio.to_thread  # FastAPI's thread pool for plain-def endpoints
-
-    @app.on_event("startup")
-    async def _size_thread_pool() -> None:
-        anyio.to_thread.current_default_thread_limiter().total_tokens = args.workers_threads
-
+    app = create_app(store, limiter, save_dir, answerer, threads=args.workers_threads)
     uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
 
 

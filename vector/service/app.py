@@ -9,7 +9,10 @@ C code, so threads do overlap in the heavy parts.
 from __future__ import annotations
 
 import time
+from contextlib import asynccontextmanager
 from pathlib import Path
+
+import anyio.to_thread
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
@@ -52,8 +55,15 @@ def create_app(
     limiter: RateLimiter | None = None,
     save_dir: Path | None = None,
     answerer: OpenAIAnswerer | None = None,
+    threads: int | None = None,
 ) -> FastAPI:
-    app = FastAPI(title="vector-search", version="0.1.0")
+    @asynccontextmanager
+    async def lifespan(_: FastAPI):
+        if threads:  # size the thread pool that runs the plain-def endpoints
+            anyio.to_thread.current_default_thread_limiter().total_tokens = threads
+        yield
+
+    app = FastAPI(title="vector-search", version="0.1.0", lifespan=lifespan)
 
     def charge(request: Request, cost: int) -> None:
         """Ask the rate limiter whether this client may spend `cost` tokens; 429 if not."""
