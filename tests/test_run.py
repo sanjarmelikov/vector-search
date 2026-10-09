@@ -55,3 +55,23 @@ def test_query_prefix_applies_to_queries_only(dataset, bow, tmp_path):
     assert row["query_prefix"] == "banana banana "
     assert row["truncated_frac"] == pytest.approx(1 / 3, abs=1e-4)
     assert row["metrics"]["mrr@10"] == pytest.approx((1 + 1 / 3 + 1 / 2) / 3, abs=1e-4)
+
+
+def test_untracked_files_do_not_make_runs_dirty(tmp_path, monkeypatch):
+    import subprocess
+
+    from vector.eval import run
+
+    def git(*args):
+        subprocess.run(["git", *args], cwd=tmp_path, check=True, capture_output=True)
+
+    git("init", "-q")
+    (tmp_path / "code.py").write_text("x = 1\n")
+    git("add", "code.py")
+    git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "init")
+    monkeypatch.setattr(run, "REPO_ROOT", tmp_path)
+
+    (tmp_path / "results.jsonl").write_text("{}\n")  # untracked
+    assert run.git_info()["dirty"] is False
+    (tmp_path / "code.py").write_text("x = 2\n")  # tracked change
+    assert run.git_info()["dirty"] is True

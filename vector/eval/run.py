@@ -142,7 +142,10 @@ def git_info() -> dict:
         ).stdout.strip()
 
     try:
-        return {"commit": git("rev-parse", "--short", "HEAD"), "dirty": bool(git("status", "--porcelain"))}
+        # Only tracked files count: untracked ones (like the results file being
+        # appended to) can't change what the code computes.
+        dirty = bool(git("status", "--porcelain", "--untracked-files=no"))
+        return {"commit": git("rev-parse", "--short", "HEAD"), "dirty": dirty}
     except (OSError, subprocess.CalledProcessError):
         return {"commit": None, "dirty": None}
 
