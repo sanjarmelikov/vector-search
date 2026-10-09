@@ -4,8 +4,8 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from anchor.embed import openai_api
-from anchor.embed.openai_api import OpenAIEmbedder
+from vector.embed import openai_api
+from vector.embed.openai_api import OpenAIEmbedder
 
 
 class FakeClient:

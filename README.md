@@ -1,4 +1,4 @@
-# Anchor
+# vector-search
 
 A vector retrieval service built around a from-scratch HNSW index, benchmarked
 against exact search and FAISS on the [BEIR SciFact](https://github.com/beir-cellar/beir) dataset.
@@ -9,7 +9,7 @@ against exact search and FAISS on the [BEIR SciFact](https://github.com/beir-cel
 ## Architecture
 
 ```
-client ──► Anchor API (FastAPI)
+client ──► vector-search API (FastAPI)
               ├──► Throttle (C++ / Redis token-bucket rate limiter)
               ├──► embed query (sentence-transformers / OpenAI)
               ├──► vector index (from-scratch HNSW | FAISS | exact)
@@ -35,7 +35,7 @@ Reproduce:
 
 ```bash
 .venv/bin/pip install -e '.[dev,embed]'
-.venv/bin/python -m anchor.eval.run --model minilm --chunker whole fixed-200-40 fixed-100-20
+.venv/bin/python -m vector.eval.run --model minilm --chunker whole fixed-200-40 fixed-100-20
 ```
 
 ## Roadmap

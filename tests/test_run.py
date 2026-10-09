@@ -1,8 +1,8 @@
 import pytest
 
-from anchor.chunking import FixedSizeChunker, WholeDocumentChunker
-from anchor.data.beir import BeirDataset, Document
-from anchor.eval.run import parse_chunker, run_experiment
+from vector.chunking import FixedSizeChunker, WholeDocumentChunker
+from vector.data.beir import BeirDataset, Document
+from vector.eval.run import parse_chunker, run_experiment
 
 
 @pytest.fixture

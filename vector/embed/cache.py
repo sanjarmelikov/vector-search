@@ -17,8 +17,8 @@ from pathlib import Path
 
 import numpy as np
 
-from anchor.data.beir import DEFAULT_DATA_DIR
-from anchor.embed.base import Embedder
+from vector.data.beir import DEFAULT_DATA_DIR
+from vector.embed.base import Embedder
 
 DEFAULT_CACHE_DIR = DEFAULT_DATA_DIR / "cache" / "embeddings"
 

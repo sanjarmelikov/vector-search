@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from anchor.index import FlatIndex
+from vector.index import FlatIndex
 
 
 def test_matches_brute_force_cosine():

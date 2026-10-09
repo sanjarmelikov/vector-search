@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from anchor.index.base import normalize
+from vector.index.base import normalize
 
 
 class FlatIndex:

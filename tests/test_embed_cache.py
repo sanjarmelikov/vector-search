@@ -2,7 +2,7 @@ import json
 
 import numpy as np
 
-from anchor.embed.cache import cache_key, cached_embed
+from vector.embed.cache import cache_key, cached_embed
 
 
 def test_second_call_hits_cache(bow, tmp_path):

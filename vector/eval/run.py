@@ -1,6 +1,6 @@
 """Run one retrieval experiment end to end and record the results.
 
-    python -m anchor.eval.run --model minilm --chunker whole fixed-200-40
+    python -m vector.eval.run --model minilm --chunker whole fixed-200-40
 
 Each (model, chunker) pair becomes one JSON row in results/phase1.jsonl,
 tagged with the git commit that produced it.
@@ -18,7 +18,7 @@ from pathlib import Path
 
 import numpy as np
 
-from anchor.chunking import (
+from vector.chunking import (
     Chunker,
     FixedSizeChunker,
     RecursiveChunker,
@@ -26,24 +26,24 @@ from anchor.chunking import (
     WholeDocumentChunker,
     chunk_documents,
 )
-from anchor.data.beir import BeirDataset, load_scifact
-from anchor.embed.base import Embedder
-from anchor.embed.cache import DEFAULT_CACHE_DIR, cached_embed
-from anchor.eval.metrics import dedupe_docs, evaluate
-from anchor.index.flat import FlatIndex
+from vector.data.beir import BeirDataset, load_scifact
+from vector.embed.base import Embedder
+from vector.embed.cache import DEFAULT_CACHE_DIR, cached_embed
+from vector.eval.metrics import dedupe_docs, evaluate
+from vector.index.flat import FlatIndex
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_OUT = REPO_ROOT / "results" / "phase1.jsonl"
 
 
 def _minilm() -> Embedder:
-    from anchor.embed.local import SentenceTransformerEmbedder
+    from vector.embed.local import SentenceTransformerEmbedder
 
     return SentenceTransformerEmbedder("sentence-transformers/all-MiniLM-L6-v2")
 
 
 def _openai_small() -> Embedder:
-    from anchor.embed.openai_api import OpenAIEmbedder
+    from vector.embed.openai_api import OpenAIEmbedder
 
     return OpenAIEmbedder("text-embedding-3-small")
 

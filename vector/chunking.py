@@ -10,7 +10,7 @@ import re
 from dataclasses import dataclass
 from typing import Protocol
 
-from anchor.data.beir import Document
+from vector.data.beir import Document
 
 
 @dataclass(frozen=True)

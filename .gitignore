@@ -217,7 +217,7 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
-# Anchor: downloaded benchmark data
+# Downloaded benchmark data
 datasets/
 
 # Personal study notes (not published)

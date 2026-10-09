@@ -1,5 +1,5 @@
 [project]
-name = "anchor"
+name = "vector-search"
 version = "0.1.0"
 description = "A vector retrieval service with a from-scratch HNSW index, benchmarked on BEIR."
 requires-python = ">=3.11"
@@ -21,7 +21,7 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
-include = ["anchor*"]
+include = ["vector*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

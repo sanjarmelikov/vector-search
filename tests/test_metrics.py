@@ -2,7 +2,7 @@ import pytest
 
 import math
 
-from anchor.eval.metrics import dedupe_docs, evaluate, ndcg_at_k, recall_at_k, reciprocal_rank
+from vector.eval.metrics import dedupe_docs, evaluate, ndcg_at_k, recall_at_k, reciprocal_rank
 
 
 def test_dedupe_keeps_first_rank():
