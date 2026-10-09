@@ -11,6 +11,7 @@ class SentenceTransformerEmbedder:
         model: str = "sentence-transformers/all-MiniLM-L6-v2",
         batch_size: int = 64,
         device: str | None = None,
+        query_prefix: str = "",
     ):
         # Imported here so the rest of the package works without torch installed.
         from sentence_transformers import SentenceTransformer
@@ -18,6 +19,7 @@ class SentenceTransformerEmbedder:
         self._model = SentenceTransformer(model, device=device)
         self.batch_size = batch_size
         self.name = model
+        self.query_prefix = query_prefix
         self.dim = self._model.get_embedding_dimension()
         # The model silently drops every token past this limit.
         self.max_tokens = self._model.max_seq_length

@@ -45,6 +45,7 @@ class OpenAIEmbedder:
         self.name = model
         self.dim = DIMS[model]
         self.max_tokens = 8191
+        self.query_prefix = ""
 
     def count_tokens(self, texts: list[str]) -> list[int]:
         return self._count(texts)

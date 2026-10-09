@@ -2,8 +2,8 @@
 
     python -m vector.eval.run --model minilm --chunker whole fixed-200-40
 
-Each (model, chunker) pair becomes one JSON row in results/phase1.jsonl,
-tagged with the git commit that produced it.
+Each (model, chunker) pair becomes one JSON row in the --out file
+(default results/phase1.jsonl), tagged with the git commit that produced it.
 """
 
 from __future__ import annotations
@@ -42,6 +42,16 @@ def _minilm() -> Embedder:
     return SentenceTransformerEmbedder("sentence-transformers/all-MiniLM-L6-v2")
 
 
+def _bge_small() -> Embedder:
+    from vector.embed.local import SentenceTransformerEmbedder
+
+    # BGE was trained to see this instruction in front of short retrieval queries.
+    return SentenceTransformerEmbedder(
+        "BAAI/bge-small-en-v1.5",
+        query_prefix="Represent this sentence for searching relevant passages: ",
+    )
+
+
 def _openai_small() -> Embedder:
     from vector.embed.openai_api import OpenAIEmbedder
 
@@ -50,6 +60,7 @@ def _openai_small() -> Embedder:
 
 MODELS: dict[str, Callable[[], Embedder]] = {
     "minilm": _minilm,
+    "bge-small": _bge_small,
     "openai-small": _openai_small,
 }
 
@@ -83,7 +94,8 @@ def run_experiment(
 
     chunk_vectors = cached_embed(embedder, texts, cache_dir)
     query_ids = list(dataset.queries)
-    query_vectors = cached_embed(embedder, [dataset.queries[q] for q in query_ids], cache_dir)
+    query_texts = [embedder.query_prefix + dataset.queries[q] for q in query_ids]
+    query_vectors = cached_embed(embedder, query_texts, cache_dir)
 
     start = time.perf_counter()
     index = FlatIndex(embedder.dim)
@@ -114,6 +126,7 @@ def run_experiment(
         "tokens_mean": round(float(tokens.mean()), 1),
         "tokens_max": int(tokens.max()),
         "max_tokens": embedder.max_tokens,
+        "query_prefix": embedder.query_prefix,
         "truncated_frac": round(truncated, 4),
         "metrics": {name: round(value, 4) for name, value in evaluate(results, dataset.qrels).items()},
         "search_p50_ms": round(float(np.percentile(latencies_ms, 50)), 4),
@@ -129,7 +142,10 @@ def git_info() -> dict:
         ).stdout.strip()
 
     try:
-        return {"commit": git("rev-parse", "--short", "HEAD"), "dirty": bool(git("status", "--porcelain"))}
+        # Only tracked files count: untracked ones (like the results file being
+        # appended to) can't change what the code computes.
+        dirty = bool(git("status", "--porcelain", "--untracked-files=no"))
+        return {"commit": git("rev-parse", "--short", "HEAD"), "dirty": dirty}
     except (OSError, subprocess.CalledProcessError):
         return {"commit": None, "dirty": None}
 

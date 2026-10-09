@@ -226,3 +226,6 @@ CLAUDE.md
 
 # macOS
 .DS_Store
+
+# Editor workspace files
+*.code-workspace
