@@ -207,3 +207,10 @@ def test_oversized_body_rejected_before_reading(store):
     client = TestClient(create_app(store, max_body_bytes=1000))
     r = client.post("/documents", content=b"x" * 5000, headers={"content-type": "application/json"})
     assert r.status_code == 413
+
+
+def test_search_page_is_served_without_a_key(store):
+    client = TestClient(create_app(store, api_keys={"k1"}))
+    r = client.get("/")
+    assert r.status_code == 200 and "text/html" in r.headers["content-type"] and "vector-search" in r.text
+    assert "innerHTML" not in r.text  # results are inserted as text, never as HTML

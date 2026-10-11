@@ -16,7 +16,7 @@ from pathlib import Path
 import anyio.to_thread
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field, field_validator
 
 from vector.generate import OpenAIAnswerer, Source
@@ -59,6 +59,8 @@ class AnswerIn(BaseModel):
     _check_question = field_validator("question")(_not_blank)
 
 
+STATIC = Path(__file__).parent / "static"
+
 # Cost of each endpoint in rate-limit tokens: a re-ranked query runs a second
 # model over 50 passages, and an answer calls a paid LLM, so they cost more.
 COSTS = {"query": 1, "query_rerank": 5, "documents": 10, "answer": 20}
@@ -94,8 +96,14 @@ def create_app(
         length = request.headers.get("content-length")
         if length and length.isdigit() and int(length) > max_body_bytes:
             return JSONResponse(status_code=413, content={"detail": "request body too large"})
-        # 2. Authentication (everything except the health check).
-        if api_keys and request.url.path != "/health":
+        # 2. Readiness: while the initial index builds, data endpoints answer 503 so load
+        #    balancers and clients retry later instead of getting partial results.
+        if not store.ready and request.url.path not in ("/health", "/livez", "/"):
+            return JSONResponse(status_code=503, content={"detail": "index is still building"},
+                                headers={"Retry-After": "10"})
+        # 3. Authentication (everything except the health check and the static search page,
+        #    which holds no data; the page sends the key with its own API calls).
+        if api_keys and request.url.path not in ("/health", "/livez", "/"):
             given = request.headers.get("x-api-key", "")
             # compare_digest takes the same time whether the first or last character differs
             if not any(hmac.compare_digest(given, k) for k in api_keys):
@@ -120,9 +128,20 @@ def create_app(
                 headers={"Retry-After": str(max(1, round(decision.retry_after)))},
             )
 
+    @app.get("/", include_in_schema=False)
+    def page() -> FileResponse:
+        return FileResponse(STATIC / "index.html")
+
+    @app.get("/livez", include_in_schema=False)
+    def livez() -> dict:
+        """Liveness: the process is up and answering (restart it only if this fails)."""
+        return {"status": "alive"}
+
     @app.get("/health")
-    def health() -> dict:
-        return {"status": "ok", **store.stats()}
+    def health() -> JSONResponse:
+        # Readiness: 200 only once the index is built (route traffic here only then).
+        status = "ok" if store.ready else "building"
+        return JSONResponse(status_code=200 if store.ready else 503, content={"status": status, **store.stats()})
 
     @app.post("/query")
     def query(body: QueryIn, request: Request) -> dict:

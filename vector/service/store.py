@@ -92,6 +92,10 @@ class SearchStore:
         self.rerank_depth = rerank_depth
         self.chunks: list[Chunk] = []
         self.titles: dict[str, str] = {}
+        # False while the initial index is still being built in the background; the API
+        # answers 503 "building" until then (alive, but not ready).
+        self.ready = True
+        self.build_progress: tuple[int, int] | None = None  # (documents done, total) while building
         self._lock = RWLock()
         # Model inference isn't guaranteed thread-safe (especially on Apple's GPU), so one at a time.
         self._model_lock = threading.Lock()
@@ -156,9 +160,24 @@ class SearchStore:
         ]
         return results, {name: round(ms, 2) for name, ms in timings.items()}
 
+    def build(self, docs: list[Document], save_dir: Path | None = None, batch: int = 256) -> None:
+        """Index `docs` in batches (progress visible via stats), save, then mark ready."""
+        self.ready = False
+        try:
+            for start in range(0, len(docs), batch):
+                self.build_progress = (start, len(docs))
+                self.add_documents(docs[start : start + batch])
+            if save_dir is not None:
+                self.save(save_dir)
+        finally:
+            self.build_progress = None
+            self.ready = True
+
     def stats(self) -> dict:
         with self._lock.read():
             out = {"documents": len(self.titles), "chunks": len(self.chunks)}
+        if self.build_progress is not None:
+            out["building"] = {"done": self.build_progress[0], "total": self.build_progress[1]}
         if self._batcher is not None and self._batcher.batches:
             out["mean_query_batch"] = round(self._batcher.texts / self._batcher.batches, 2)
         return out
@@ -215,6 +234,12 @@ class SearchStore:
 
 def _sibling(directory: Path, suffix: str) -> Path:
     return directory.with_name(directory.name + suffix)
+
+
+def recover_possible(directory: Path) -> bool:
+    """True if a crashed save left a complete index behind that load() can recover."""
+    directory = Path(directory)
+    return any((_sibling(directory, sfx) / "meta.json").exists() for sfx in (".tmp", ".old"))
 
 
 def recover(directory: Path) -> None:

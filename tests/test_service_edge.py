@@ -137,3 +137,23 @@ def test_corrupt_save_fails_loudly(store, bow, tmp_path):
     (tmp_path / "idx" / "meta.json").write_text("{truncated")
     with pytest.raises(ValueError):
         SearchStore.load(tmp_path / "idx", bow, WholeDocumentChunker())
+
+
+def test_not_ready_while_building(store):
+    client = TestClient(create_app(store))
+    store.ready = False
+    store.build_progress = (256, 5183)
+    r = client.get("/health")
+    assert r.status_code == 503 and r.json()["status"] == "building" and r.json()["building"]["total"] == 5183
+    q = client.post("/query", json={"query": "apple"})
+    assert q.status_code == 503 and q.headers["retry-after"] == "10"
+    assert client.get("/").status_code == 200  # the page still loads
+    assert client.get("/livez").status_code == 200  # alive, just not ready
+    store.ready, store.build_progress = True, None
+    assert client.get("/health").status_code == 200
+
+
+def test_build_indexes_in_batches_and_saves(store, tmp_path):
+    many = [Document(f"d{i}", "", "apple banana" if i % 2 else "cherry date") for i in range(30)]
+    store.build(many, tmp_path / "idx", batch=7)
+    assert store.ready and store.stats()["documents"] == 30 and (tmp_path / "idx" / "meta.json").exists()

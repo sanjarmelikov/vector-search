@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>vector-search</title>
+<style>
+  :root { --bg: #fcfcfb; --fg: #1b1f24; --muted: #57606a; --line: #d0d7de; --accent: #1f6feb; --card: #ffffff; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #1a1a19; --fg: #f0f0ee; --muted: #a8a8a0; --line: #3a3a38; --accent: #4c8dff; --card: #232322; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.5 -apple-system, "Helvetica Neue", Arial, sans-serif; }
+  main { max-width: 760px; margin: 0 auto; padding: 32px 16px 64px; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  p.sub { margin: 0 0 20px; color: var(--muted); }
+  form { display: flex; gap: 8px; flex-wrap: wrap; }
+  input[type=text], input[type=password] { flex: 1 1 280px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--card); color: var(--fg); font: inherit; }
+  button { padding: 10px 16px; border: 0; border-radius: 8px; background: var(--accent); color: #fff; font: inherit; cursor: pointer; }
+  button.secondary { background: transparent; color: var(--accent); border: 1px solid var(--line); }
+  .opts { display: flex; gap: 16px; align-items: center; margin: 10px 0 0; color: var(--muted); font-size: 13px; flex-wrap: wrap; }
+  .status { color: var(--muted); font-size: 13px; margin: 16px 0 8px; min-height: 20px; }
+  .answer { background: var(--card); border: 1px solid var(--line); border-left: 3px solid var(--accent); border-radius: 8px; padding: 12px 14px; margin-bottom: 16px; white-space: pre-wrap; }
+  ol { list-style: none; padding: 0; margin: 0; }
+  li { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; margin-bottom: 10px; }
+  li .title { font-weight: 600; }
+  li .meta { color: var(--muted); font-size: 12px; margin: 2px 0 6px; }
+  li .text { color: var(--fg); font-size: 14px; display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; }
+  .error { color: #cf222e; }
+</style>
+</head>
+<body>
+<main>
+  <h1>vector-search</h1>
+  <p class="sub">Semantic search over scientific abstracts (BEIR SciFact) with a from-scratch HNSW index.</p>
+  <form id="f">
+    <input id="q" type="text" placeholder="e.g. Vitamin B12 deficiency raises homocysteine" maxlength="2000" required autofocus>
+    <button type="submit">Search</button>
+    <button type="button" class="secondary" id="ask">Ask (AI answer)</button>
+  </form>
+  <div class="opts">
+    <label><input type="checkbox" id="rerank"> re-rank (slower)</label>
+    <label>results <input type="number" id="k" value="5" min="1" max="20" style="width:56px"></label>
+    <input id="key" type="password" placeholder="API key (if the server needs one)" style="flex:0 1 240px;padding:6px 10px;font-size:13px">
+  </div>
+  <div class="status" id="status"></div>
+  <div id="answer"></div>
+  <ol id="results"></ol>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+try { $("key").value = localStorage.getItem("vs-key") || ""; } catch (e) {}
+
+function text(el, s) { el.textContent = s; return el; }  // server data is inserted as plain text, never parsed as HTML (prevents XSS)
+
+async function call(path, body) {
+  const key = $("key").value.trim();
+  try { localStorage.setItem("vs-key", key); } catch (e) {}
+  const headers = {"content-type": "application/json"};
+  if (key) headers["x-api-key"] = key;
+  const r = await fetch(path, {method: "POST", headers, body: JSON.stringify(body)});
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(typeof data.detail === "string" ? data.detail : `HTTP ${r.status}`);
+  return data;
+}
+
+function render(results) {
+  const list = $("results");
+  list.replaceChildren();
+  for (const r of results) {
+    const li = document.createElement("li");
+    li.append(text(document.createElement("div"), r.title || "(untitled)"));
+    li.firstChild.className = "title";
+    const meta = text(document.createElement("div"), `doc ${r.doc_id} · score ${r.score}`);
+    meta.className = "meta";
+    const body = text(document.createElement("div"), r.text);
+    body.className = "text";
+    li.append(meta, body);
+    list.append(li);
+  }
+}
+
+async function run(ask) {
+  const q = $("q").value.trim();
+  if (!q) return;
+  $("status").className = "status";
+  text($("status"), ask ? "Thinking…" : "Searching…");
+  $("answer").replaceChildren();
+  try {
+    const k = Math.max(1, Math.min(20, Number($("k").value) || 5));
+    if (ask) {
+      const d = await call("/answer", {question: q, k: Math.min(k, 10), rerank: $("rerank").checked});
+      const box = text(document.createElement("div"), d.answer);
+      box.className = "answer";
+      $("answer").append(box);
+      render([]);
+      text($("status"), `${d.citations.length} source(s) cited · ${Math.round(d.timings_ms.generate_ms)} ms to generate`);
+    } else {
+      const d = await call("/query", {query: q, k, rerank: $("rerank").checked});
+      render(d.results);
+      const t = d.timings_ms;
+      text($("status"), `${d.results.length} results · embed ${t.embed_ms} ms · search ${t.search_ms} ms` +
+        (t.rerank_ms ? ` · re-rank ${Math.round(t.rerank_ms)} ms` : ""));
+    }
+  } catch (e) {
+    $("status").className = "status error";
+    text($("status"), e.message);
+  }
+}
+$("f").addEventListener("submit", (e) => { e.preventDefault(); run(false); });
+$("ask").addEventListener("click", () => run(true));
+</script>
+</body>
+</html>
