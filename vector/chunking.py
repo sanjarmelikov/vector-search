@@ -10,7 +10,7 @@ import re
 from dataclasses import dataclass
 from typing import Protocol
 
-from anchor.data.beir import Document
+from vector.data.beir import Document
 
 
 @dataclass(frozen=True)
@@ -39,6 +39,15 @@ def _check_sizes(size: int, overlap: int) -> None:
         raise ValueError("size must be positive")
     if not 0 <= overlap < size:
         raise ValueError("overlap must be in [0, size)")
+
+
+class WholeDocumentChunker:
+    """No chunking: each document is one passage. The baseline for chunkers."""
+
+    name = "whole"
+
+    def split(self, text: str) -> list[str]:
+        return [text.strip()] if text.strip() else []
 
 
 class FixedSizeChunker:
