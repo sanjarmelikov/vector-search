@@ -3,7 +3,8 @@ import pytest
 
 from vector.index import FlatIndex
 
-faiss_hnsw = pytest.importorskip("vector.index.faiss_hnsw", exc_type=ImportError)
+pytest.importorskip("faiss")  # optional dependency (pip install -e '.[bench]')
+from vector.index import faiss_hnsw  # noqa: E402
 
 
 def test_faiss_hnsw_matches_exact_search():
