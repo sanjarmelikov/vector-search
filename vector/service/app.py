@@ -16,17 +16,26 @@ import anyio.to_thread
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from vector.generate import OpenAIAnswerer, Source
 from vector.service.ratelimit import RateLimiter
 from vector.service.store import SearchStore, as_dicts, documents_from_payload
 
 
+def _not_blank(value: str) -> str:
+    if not value.strip():
+        raise ValueError("must contain non-whitespace text")
+    return value
+
+
 class DocumentIn(BaseModel):
-    id: str = Field(min_length=1)
-    title: str = ""
-    text: str = Field(min_length=1)
+    id: str = Field(min_length=1, max_length=200)
+    title: str = Field(default="", max_length=1000)
+    # Bounded so one request can't make the server embed (and hold) unlimited text.
+    text: str = Field(min_length=1, max_length=200_000)
+
+    _check_text = field_validator("id", "text")(_not_blank)
 
 
 class DocumentsIn(BaseModel):
@@ -38,11 +47,15 @@ class QueryIn(BaseModel):
     k: int = Field(default=10, ge=1, le=100)
     rerank: bool = False
 
+    _check_query = field_validator("query")(_not_blank)
+
 
 class AnswerIn(BaseModel):
     question: str = Field(min_length=1, max_length=2000)
     k: int = Field(default=5, ge=1, le=10)
     rerank: bool = False
+
+    _check_question = field_validator("question")(_not_blank)
 
 
 # Cost of each endpoint in rate-limit tokens: a re-ranked query runs a second

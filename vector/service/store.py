@@ -10,6 +10,7 @@ runs, so without the lock a query could see a half-linked node.
 from __future__ import annotations
 
 import json
+import shutil
 import threading
 import time
 from contextlib import contextmanager
@@ -165,10 +166,18 @@ class SearchStore:
     # ---- persistence ----
 
     def save(self, directory: Path) -> None:
-        """Write the index and chunk table to `directory`, replacing any previous save atomically."""
+        """Write the index and chunk table to `directory`, replacing any previous save atomically.
+
+        Steps: write everything to `<dir>.tmp` (meta.json last, so its presence means
+        "complete"), move the live save to `<dir>.old`, move tmp into place, delete old.
+        A crash at any point leaves a complete save in one of the three places, and
+        `recover()` (run by load) finishes or rolls back the swap.
+        """
         directory = Path(directory)
-        tmp = directory.with_name(directory.name + ".tmp")
-        tmp.mkdir(parents=True, exist_ok=True)
+        tmp, old = _sibling(directory, ".tmp"), _sibling(directory, ".old")
+        recover(directory)  # finish any swap a previous crash interrupted
+        shutil.rmtree(tmp, ignore_errors=True)  # never mix in a half-written earlier attempt
+        tmp.mkdir(parents=True)
         with self._lock.read():
             self.index.save(tmp / "index.npz")
             meta = {
@@ -178,19 +187,19 @@ class SearchStore:
                 "titles": self.titles,
             }
         (tmp / "meta.json").write_text(json.dumps(meta))
-        old = directory.with_name(directory.name + ".old")
         if directory.exists():
             directory.rename(old)
         tmp.rename(directory)  # readers see the old save or the new one, never a mix
-        if old.exists():
-            for f in old.iterdir():
-                f.unlink()
-            old.rmdir()
+        shutil.rmtree(old, ignore_errors=True)
 
     @classmethod
     def load(cls, directory: Path, embedder: Embedder, chunker: Chunker, **kwargs) -> SearchStore:
         directory = Path(directory)
-        meta = json.loads((directory / "meta.json").read_text())
+        recover(directory)
+        try:
+            meta = json.loads((directory / "meta.json").read_text())
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"saved index metadata in {directory} is corrupt: {exc}") from exc
         if meta["embedder"] != embedder.name or meta["chunker"] != chunker.name:
             raise ValueError(
                 f"saved index was built with {meta['embedder']} / {meta['chunker']}, "
@@ -202,6 +211,23 @@ class SearchStore:
         if len(store.chunks) != len(store.index):
             raise ValueError("saved chunk table and index disagree; rebuild it")
         return store
+
+
+def _sibling(directory: Path, suffix: str) -> Path:
+    return directory.with_name(directory.name + suffix)
+
+
+def recover(directory: Path) -> None:
+    """Repair a save that crashed between its two renames (see SearchStore.save)."""
+    directory = Path(directory)
+    if directory.exists():
+        return
+    tmp, old = _sibling(directory, ".tmp"), _sibling(directory, ".old")
+    if (tmp / "meta.json").exists():  # the new save was complete: finish the swap
+        tmp.rename(directory)
+        shutil.rmtree(old, ignore_errors=True)
+    elif (old / "meta.json").exists():  # new save incomplete: roll back to the previous one
+        old.rename(directory)
 
 
 def documents_from_payload(items: list[dict]) -> list[Document]:
