@@ -3,8 +3,16 @@
 A vector retrieval service built around a from-scratch HNSW index, benchmarked
 against exact search and FAISS on the [BEIR SciFact](https://github.com/beir-cellar/beir) dataset.
 
-> Work in progress. Every number below comes from a recorded run in
-> [`results/`](results/), tagged with the commit that produced it.
+> Every number below comes from a recorded run in [`results/`](results/), tagged
+> with the commit that produced it. CI runs the full test suite on every push.
+
+## Highlights
+
+| Claim | Evidence |
+|---|---|
+| **HNSW from scratch** (`vector/index/hnsw.py`) matches **FAISS recall within 0.8 points** on SIFT1M and searches **8× faster than exact search at 250K vectors** (recall@10 0.97) | [Phase 4](#phase-4-speed-at-scale-exact-vs-our-hnsw-vs-faiss-sift1m), `results/phase4.jsonl` |
+| **25 retrieval configurations** on BEIR SciFact with paired significance tests: the embedding model is the only significant driver (**nDCG@10 0.645 → 0.713, p < 0.001**); re-ranking gave no significant gain | [Phase 2](#phase-2-chunking-strategy--chunk-size--embedding-model), [Phase 5](#phase-5-re-ranking-with-cross-encoders) |
+| **FastAPI RAG service**: persistent incremental indexing, API keys, rate limiting; **micro-batching raised throughput 3.2× (93 → 299 req/s)** and cut p99 from 698 to 359 ms at 64 clients | [Phases 6–7](#phase-6-the-search-service), `results/phase7.jsonl` |
 
 ## Architecture
 

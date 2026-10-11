@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
+import threading
 import time
 from pathlib import Path
 
@@ -22,7 +24,7 @@ from vector.index.hnsw import HNSWIndex
 from vector.rerank import RERANKERS, CrossEncoderReranker
 from vector.service.app import create_app
 from vector.service.ratelimit import TokenBucketLimiter
-from vector.service.store import SearchStore
+from vector.service.store import SearchStore, recover_possible
 
 log = logging.getLogger("vector.service")
 
@@ -51,17 +53,23 @@ def main(argv: list[str] | None = None) -> None:
     save_dir = args.data_dir / f"{args.model}-{chunker.name}"
 
     start = time.perf_counter()
-    if (save_dir / "meta.json").exists():
+    if (save_dir / "meta.json").exists() or recover_possible(save_dir):
         store = SearchStore.load(save_dir, embedder, chunker, reranker=reranker, batch_queries=not args.no_batching)
         log.info("loaded %d chunks from %s in %.1fs", len(store.chunks), save_dir, time.perf_counter() - start)
     else:
         store = SearchStore(embedder, chunker, HNSWIndex(embedder.dim, M=16, ef_construction=100), reranker,
                             batch_queries=not args.no_batching)
         if not args.no_preload:
-            log.info("building index over SciFact (first start only)...")
-            store.add_documents(list(load_scifact().corpus.values()))
-            store.save(save_dir)
-            log.info("built and saved %d chunks in %.1fs", len(store.chunks), time.perf_counter() - start)
+            # Build in the background so the server is reachable (and reports "building")
+            # right away, instead of looking dead to health checks for minutes.
+            docs = list(load_scifact().corpus.values())
+            log.info("building index over %d SciFact documents in the background...", len(docs))
+
+            def build() -> None:
+                store.build(docs, save_dir)
+                log.info("built and saved %d chunks in %.1fs", len(store.chunks), time.perf_counter() - start)
+
+            threading.Thread(target=build, name="index-build", daemon=True).start()
     store.index.ef_search = args.ef_search
 
     limiter = None
@@ -72,7 +80,12 @@ def main(argv: list[str] | None = None) -> None:
         from vector.generate import OpenAIAnswerer
 
         answerer = OpenAIAnswerer()
-    app = create_app(store, limiter, save_dir, answerer, threads=args.workers_threads)
+    # Comma-separated keys from the environment (never on the command line, where `ps` shows them).
+    api_keys = {k.strip() for k in os.environ.get("VECTOR_API_KEYS", "").split(",") if k.strip()} or None
+    if api_keys is None and args.host not in ("127.0.0.1", "localhost"):
+        log.warning("listening on %s with no API keys: anyone who can reach it can add documents. "
+                    "Set VECTOR_API_KEYS.", args.host)
+    app = create_app(store, limiter, save_dir, answerer, threads=args.workers_threads, api_keys=api_keys)
     uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
 
 
