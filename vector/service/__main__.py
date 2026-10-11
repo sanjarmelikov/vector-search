@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import time
 from pathlib import Path
 
@@ -72,7 +73,12 @@ def main(argv: list[str] | None = None) -> None:
         from vector.generate import OpenAIAnswerer
 
         answerer = OpenAIAnswerer()
-    app = create_app(store, limiter, save_dir, answerer, threads=args.workers_threads)
+    # Comma-separated keys from the environment (never on the command line, where `ps` shows them).
+    api_keys = {k.strip() for k in os.environ.get("VECTOR_API_KEYS", "").split(",") if k.strip()} or None
+    if api_keys is None and args.host not in ("127.0.0.1", "localhost"):
+        log.warning("listening on %s with no API keys: anyone who can reach it can add documents. "
+                    "Set VECTOR_API_KEYS.", args.host)
+    app = create_app(store, limiter, save_dir, answerer, threads=args.workers_threads, api_keys=api_keys)
     uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
 
 

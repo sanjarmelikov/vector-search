@@ -8,6 +8,7 @@ C code, so threads do overlap in the heavy parts.
 
 from __future__ import annotations
 
+import hmac
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -69,7 +70,16 @@ def create_app(
     save_dir: Path | None = None,
     answerer: OpenAIAnswerer | None = None,
     threads: int | None = None,
+    api_keys: set[str] | None = None,
+    max_body_bytes: int = 10 * 1024 * 1024,
 ) -> FastAPI:
+    """Build the app.
+
+    api_keys: if given, every endpoint except /health requires `x-api-key` to be one of
+    them (401 otherwise), and rate limits are per verified key. Without keys the API is
+    open (local use) and rate limits are per client IP, because an unverified key header
+    could be changed on every request to dodge the limit.
+    """
     @asynccontextmanager
     async def lifespan(_: FastAPI):
         if threads:  # size the thread pool that runs the plain-def endpoints
@@ -78,12 +88,31 @@ def create_app(
 
     app = FastAPI(title="vector-search", version="0.1.0", lifespan=lifespan)
 
+    @app.middleware("http")
+    async def guard(request: Request, call_next):
+        # 1. Size: refuse oversized bodies from the header, before reading them.
+        length = request.headers.get("content-length")
+        if length and length.isdigit() and int(length) > max_body_bytes:
+            return JSONResponse(status_code=413, content={"detail": "request body too large"})
+        # 2. Authentication (everything except the health check).
+        if api_keys and request.url.path != "/health":
+            given = request.headers.get("x-api-key", "")
+            # compare_digest takes the same time whether the first or last character differs
+            if not any(hmac.compare_digest(given, k) for k in api_keys):
+                return JSONResponse(status_code=401, content={"detail": "missing or invalid API key"},
+                                    headers={"WWW-Authenticate": "ApiKey"})
+        return await call_next(request)
+
+    def client_id(request: Request) -> str:
+        if api_keys:
+            return "key:" + request.headers["x-api-key"]  # verified by the middleware
+        return "ip:" + (request.client.host if request.client else "unknown")
+
     def charge(request: Request, cost: int) -> None:
         """Ask the rate limiter whether this client may spend `cost` tokens; 429 if not."""
         if limiter is None:
             return
-        client = request.headers.get("x-api-key") or (request.client.host if request.client else "anon")
-        decision = limiter.allow(client, cost)
+        decision = limiter.allow(client_id(request), cost)
         if not decision.allowed:
             raise HTTPException(
                 status_code=429,

@@ -105,6 +105,7 @@ def test_rate_limit_returns_429_with_retry_after(store):
     now = [0.0]
     limiter = TokenBucketLimiter(rate=1, capacity=2, clock=lambda: now[0])
     client = TestClient(create_app(store, limiter))
+    client = TestClient(create_app(store, limiter, api_keys={"alice", "bob"}))
     headers = {"x-api-key": "alice"}
     assert client.post("/query", json={"query": "a"}, headers=headers).status_code == 200
     assert client.post("/query", json={"query": "a"}, headers=headers).status_code == 200
@@ -182,3 +183,27 @@ def test_answer_endpoint_cites_retrieved_documents(client, store):
     assert "[1] Berry" in fake.requests[0]["messages"][1]["content"]
     # Without an answerer configured, the endpoint says so instead of failing.
     assert client.post("/answer", json={"question": "cherry"}).status_code == 400
+
+
+def test_api_keys_required_when_configured(store):
+    client = TestClient(create_app(store, api_keys={"k1"}))
+    assert client.get("/health").status_code == 200  # health checks stay open
+    assert client.post("/query", json={"query": "a"}).status_code == 401
+    assert client.post("/query", json={"query": "a"}, headers={"x-api-key": "nope"}).status_code == 401
+    assert client.post("/documents", json={"documents": DOCS}).status_code == 401
+    assert client.post("/query", json={"query": "a"}, headers={"x-api-key": "k1"}).status_code == 200
+
+
+def test_without_keys_rate_limit_is_per_ip_so_fake_keys_dont_help(store):
+    now = [0.0]
+    limiter = TokenBucketLimiter(rate=1, capacity=1, clock=lambda: now[0])
+    client = TestClient(create_app(store, limiter))
+    assert client.post("/query", json={"query": "a"}, headers={"x-api-key": "a"}).status_code == 200
+    # A different made-up key from the same client doesn't buy a fresh bucket.
+    assert client.post("/query", json={"query": "a"}, headers={"x-api-key": "b"}).status_code == 429
+
+
+def test_oversized_body_rejected_before_reading(store):
+    client = TestClient(create_app(store, max_body_bytes=1000))
+    r = client.post("/documents", content=b"x" * 5000, headers={"content-type": "application/json"})
+    assert r.status_code == 413
