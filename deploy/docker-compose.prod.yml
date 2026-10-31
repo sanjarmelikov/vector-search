@@ -1,0 +1,24 @@
+# Production stack for a single VM: Caddy terminates HTTPS, the API is reachable only
+# through it (no published port), and the demo is read-only.
+#   DOMAIN=1-2-3-4.sslip.io docker compose -f deploy/docker-compose.prod.yml up -d --build
+services:
+  api:
+    build: ..
+    command: ["--read-only", "--trust-proxy", "--rate", "5", "--burst", "15"]
+    # No /answer here: it calls a paid API, and the demo is open to everyone.
+    volumes:
+      - index:/app/datasets/service
+    restart: unless-stopped
+  caddy:
+    image: caddy:2
+    depends_on: [api]
+    ports: ["80:80", "443:443"]
+    environment:
+      DOMAIN: ${DOMAIN:?set DOMAIN, e.g. 1-2-3-4.sslip.io}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data   # certificates; keep them across restarts to avoid Let's Encrypt limits
+    restart: unless-stopped
+volumes:
+  index:
+  caddy_data:

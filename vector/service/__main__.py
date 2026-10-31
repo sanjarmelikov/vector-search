@@ -40,6 +40,9 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--answer", action="store_true", help="enable /answer (needs OPENAI_API_KEY in .env)")
     parser.add_argument("--rate", type=float, help="rate limit: tokens per second per client")
     parser.add_argument("--burst", type=float, help="rate limit: bucket capacity (default 2 x rate)")
+    parser.add_argument("--read-only", action="store_true", help="public demo: search only, POST /documents is refused")
+    parser.add_argument("--trust-proxy", action="store_true",
+                        help="take the client IP from X-Forwarded-For (only behind a reverse proxy that sets it)")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--workers-threads", type=int, default=64, help="thread pool size for requests")
@@ -82,11 +85,15 @@ def main(argv: list[str] | None = None) -> None:
         answerer = OpenAIAnswerer()
     # Comma-separated keys from the environment (never on the command line, where `ps` shows them).
     api_keys = {k.strip() for k in os.environ.get("VECTOR_API_KEYS", "").split(",") if k.strip()} or None
-    if api_keys is None and args.host not in ("127.0.0.1", "localhost"):
+    if api_keys is None and not args.read_only and args.host not in ("127.0.0.1", "localhost"):
         log.warning("listening on %s with no API keys: anyone who can reach it can add documents. "
                     "Set VECTOR_API_KEYS.", args.host)
-    app = create_app(store, limiter, save_dir, answerer, threads=args.workers_threads, api_keys=api_keys)
-    uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
+    app = create_app(store, limiter, save_dir, answerer, threads=args.workers_threads, api_keys=api_keys,
+                     read_only=args.read_only)
+    # Behind a proxy every connection comes from the proxy's address; without this the
+    # per-IP rate limit would treat all visitors as one client.
+    uvicorn.run(app, host=args.host, port=args.port, log_level="warning",
+                proxy_headers=args.trust_proxy, forwarded_allow_ips="*" if args.trust_proxy else None)
 
 
 if __name__ == "__main__":

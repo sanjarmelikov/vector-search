@@ -90,6 +90,15 @@ class ShortestMatchReranker:
         return np.array([(query in p.split()) / len(p.split()) for p in passages])
 
 
+def test_read_only_refuses_writes_but_still_searches(store):
+    store.add_documents([Document(d["id"], d["title"], d["text"]) for d in DOCS])
+    client = TestClient(create_app(store, read_only=True))
+    r = client.post("/documents", json={"documents": DOCS})
+    assert r.status_code == 403 and "read-only" in r.json()["detail"]
+    assert client.post("/query", json={"query": "cherry", "k": 1}).status_code == 200
+    assert store.stats()["documents"] == 3  # unchanged
+
+
 def test_rerank_endpoint(bow):
     store = SearchStore(bow, WholeDocumentChunker(), reranker=ShortestMatchReranker())
     client = TestClient(create_app(store))

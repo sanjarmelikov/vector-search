@@ -74,6 +74,7 @@ def create_app(
     threads: int | None = None,
     api_keys: set[str] | None = None,
     max_body_bytes: int = 10 * 1024 * 1024,
+    read_only: bool = False,
 ) -> FastAPI:
     """Build the app.
 
@@ -81,6 +82,9 @@ def create_app(
     them (401 otherwise), and rate limits are per verified key. Without keys the API is
     open (local use) and rate limits are per client IP, because an unverified key header
     could be changed on every request to dodge the limit.
+
+    read_only: refuse POST /documents (403), for a public demo where anyone can search but
+    nobody may change the index.
     """
     @asynccontextmanager
     async def lifespan(_: FastAPI):
@@ -173,6 +177,8 @@ def create_app(
 
     @app.post("/documents", status_code=201)
     def add_documents(body: DocumentsIn, request: Request) -> dict:
+        if read_only:
+            raise HTTPException(status_code=403, detail="this server is read-only")
         charge(request, COSTS["documents"])
         added = store.add_documents(documents_from_payload([d.model_dump() for d in body.documents]))
         if save_dir is not None and added:
