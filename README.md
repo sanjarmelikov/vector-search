@@ -135,6 +135,35 @@ F="faiss-hnsw-16-100-16 faiss-hnsw-16-100-32 faiss-hnsw-16-100-64 faiss-hnsw-16-
 .venv/bin/python -m vector.eval.plot results/phase4.jsonl
 ```
 
+### Phase 5: re-ranking with cross-encoders
+
+A cross-encoder reads the query and each passage *together* and re-scores the top chunks from search. Two models: **ms-marco-MiniLM-L-6-v2** (22M parameters, trained on web search) and **bge-reranker-base** (278M). Exact search, 300 SciFact queries, paired randomization tests on per-query nDCG@10 (Holm-corrected within each baseline). Commit `e844e39`.
+
+| First stage | Re-ranker @ depth | nDCG@10 | Δ | 95% CI | p (Holm) | Re-rank p50 |
+|---|---|---:|---:|---|---:|---:|
+| bge-small, whole docs | none | 0.713 | | | | |
+| | ms-marco-MiniLM @ 20 | 0.707 | −0.005 | [−0.031, +0.020] | 1.00 | 0.29 s |
+| | ms-marco-MiniLM @ 50 | 0.696 | −0.017 | [−0.044, +0.011] | 0.80 | 0.40 s |
+| | ms-marco-MiniLM @ 100 | 0.694 | −0.018 | [−0.046, +0.010] | 0.80 | 1.19 s |
+| | bge-reranker-base @ 50 | 0.715 | +0.002 | [−0.023, +0.029] | 1.00 | 2.98 s |
+| MiniLM, fixed-100-20 | none | 0.674 | | | | |
+| | ms-marco-MiniLM @ 50 | 0.699 | +0.025 | [−0.003, +0.054] | 0.09 | 0.28 s |
+
+- **Re-ranking didn't measurably improve retrieval here.** No configuration differs significantly from no re-ranking. The web-trained MS MARCO model trends *worse* on top of bge-small (scientific claims aren't web queries), and slightly better on top of the weaker MiniLM first stage. The 12× larger bge-reranker ties.
+- **It's expensive:** 0.3–3 s per query on this laptop vs about 0.1 ms for the search itself, so it would dominate the service's latency.
+- **Conclusion:** a stronger first-stage embedding model (Phase 2: +0.039, p = 0.004) beat every re-ranker tried, at no added query cost. The service ships with re-ranking off by default (opt-in per request).
+
+Reproduce:
+
+```bash
+R="--per-query --out results/phase5.jsonl"
+.venv/bin/python -m vector.eval.run --model bge-small --chunker whole --rerank none ms-marco-minilm --rerank-depth 50 $R
+.venv/bin/python -m vector.eval.run --model bge-small --chunker whole --rerank ms-marco-minilm --rerank-depth 20 $R   # and 100
+.venv/bin/python -m vector.eval.run --model bge-small --chunker whole --rerank bge-reranker --rerank-depth 50 $R
+.venv/bin/python -m vector.eval.run --model minilm --chunker fixed-100-20 --rerank none ms-marco-minilm $R
+.venv/bin/python -m vector.eval.compare results/phase5.jsonl --base bge-small:whole:flat:none
+```
+
 ## Roadmap
 
 - [x] BEIR dataset loader
@@ -146,7 +175,7 @@ F="faiss-hnsw-16-100-16 faiss-hnsw-16-100-32 faiss-hnsw-16-100-64 faiss-hnsw-16-
 - [x] From-scratch HNSW index
 - [x] FAISS HNSW comparison (SIFT1M)
 - [x] Chunking × embedding-model sweep (local models; OpenAI pending)
-- [ ] Re-ranking
+- [x] Re-ranking (measured: no significant gain)
 - [ ] FastAPI service, persistence, incremental indexing
 - [ ] Throttle integration and load testing
 

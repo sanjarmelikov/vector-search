@@ -60,17 +60,28 @@ def holm(p_values: list[float]) -> list[float]:
 
 
 def label(row: dict) -> str:
-    return f"{row['model'].split('/')[-1]}:{row['chunker']}:{row.get('index', 'flat')}"
+    base = f"{row['model'].split('/')[-1]}:{row['chunker']}:{row.get('index', 'flat')}"
+    if row.get("rerank"):
+        base += f" + {row['rerank'].split('/')[-1]}@{row['rerank_depth']}"
+    return base
 
 
 def matches(row: dict, selector: str) -> bool:
-    """'model[:chunker[:index]]', where model is a substring, e.g. 'bge-small:whole'."""
+    """'model[:chunker[:index[:rerank]]]', e.g. 'bge-small:whole' or 'bge-small:whole:flat:none'.
+
+    model and rerank match as case-insensitive substrings; 'none' means not re-ranked.
+    """
     parts = selector.split(":")
     if parts[0].lower() not in row["model"].lower():
         return False
     if len(parts) > 1 and parts[1] != row["chunker"]:
         return False
-    return len(parts) < 3 or parts[2] == row.get("index", "flat")
+    if len(parts) > 2 and parts[2] != row.get("index", "flat"):
+        return False
+    if len(parts) > 3:
+        rr = row.get("rerank")
+        return rr is None if parts[3] == "none" else rr is not None and parts[3].lower() in rr.lower()
+    return True
 
 
 def compare(
@@ -116,7 +127,7 @@ def compare(
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("path", type=Path)
-    parser.add_argument("--base", required=True, help="baseline, e.g. 'bge-small:whole' or 'minilm:fixed-100-20:flat'")
+    parser.add_argument("--base", required=True, help="baseline, e.g. 'bge-small:whole' or 'bge-small:whole:flat:none'")
     parser.add_argument("--against", help="which rows to test (selector); default: the baseline's model")
     parser.add_argument("--alpha", type=float, default=0.05)
     args = parser.parse_args(argv)

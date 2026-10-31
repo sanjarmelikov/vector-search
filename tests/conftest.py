@@ -1,6 +1,8 @@
 import numpy as np
 import pytest
 
+from vector.data.beir import BeirDataset, Document
+
 
 class BagOfWordsEmbedder:
     """Deterministic stand-in for a real model: one dimension per vocabulary word.
@@ -33,3 +35,16 @@ class BagOfWordsEmbedder:
 @pytest.fixture
 def bow():
     return BagOfWordsEmbedder(["apple", "banana", "cherry", "date"])
+
+
+@pytest.fixture
+def dataset():
+    corpus = {
+        "d1": Document("d1", "", "apple banana"),
+        "d2": Document("d2", "", "cherry"),
+        "d3": Document("d3", "", "banana banana cherry date"),
+    }
+    queries = {"q1": "apple", "q2": "cherry", "q3": "banana"}
+    # q3's labeled answer is d1, but d3 mentions banana more, so d1 lands at rank 2.
+    qrels = {"q1": {"d1": 1}, "q2": {"d2": 1}, "q3": {"d1": 1}}
+    return BeirDataset(corpus, queries, qrels)
