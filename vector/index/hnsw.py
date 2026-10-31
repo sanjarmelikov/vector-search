@@ -86,6 +86,59 @@ class HNSWIndex:
     def __len__(self) -> int:
         return self._n
 
+    # ---- persistence ----
+
+    def save(self, path) -> None:
+        """Write the index to one .npz file: vectors, levels, and each layer's links as flat arrays.
+
+        Each layer is stored in "CSR" form: `nodes` (who is on the layer), `offsets`
+        (where each node's links start), and `links` (all neighbor ids, end to end).
+        No pickle: loading a pickle can run arbitrary code (D16).
+        """
+        arrays = {
+            "vectors": self._vectors[: self._n],
+            "levels": np.array(self._levels, dtype=np.int32),
+            "params": np.array([self.M, self.ef_construction, self.ef_search,
+                                -1 if self._entry is None else self._entry], dtype=np.int64),
+        }
+        for layer, graph in enumerate(self._layers):
+            nodes = np.fromiter(graph.keys(), dtype=np.int64, count=len(graph))
+            sizes = np.array([len(graph[n]) for n in nodes.tolist()], dtype=np.int64)
+            arrays[f"nodes{layer}"] = nodes
+            arrays[f"offsets{layer}"] = np.concatenate([[0], np.cumsum(sizes)]).astype(np.int64)
+            arrays[f"links{layer}"] = np.array([x for n in nodes.tolist() for x in graph[n]], dtype=np.int64)
+        # The RNG state too, so inserts after a reload pick the same levels as without the reload.
+        state = self._rng.bit_generator.state
+        arrays["rng"] = np.array([state["state"]["state"], state["state"]["inc"],
+                                  state["has_uint32"], state["uinteger"]], dtype=object).astype(str)
+        np.savez(path, **arrays)
+
+    @classmethod
+    def load(cls, path) -> HNSWIndex:
+        with np.load(path, allow_pickle=False) as data:
+            m, ef_construction, ef_search, entry = data["params"].tolist()
+            vectors = data["vectors"]
+            index = cls(vectors.shape[1], M=m, ef_construction=ef_construction, ef_search=ef_search)
+            index._vectors = np.array(vectors, dtype=np.float32)
+            index._n = len(vectors)
+            index._levels = data["levels"].tolist()
+            index._entry = None if entry < 0 else entry
+            layer = 0
+            while f"nodes{layer}" in data:
+                nodes = data[f"nodes{layer}"].tolist()
+                offsets = data[f"offsets{layer}"].tolist()
+                links = data[f"links{layer}"].tolist()
+                index._layers.append(
+                    {n: links[offsets[i]: offsets[i + 1]] for i, n in enumerate(nodes)}
+                )
+                layer += 1
+            s, inc, has32, uint = data["rng"].tolist()
+            index._rng.bit_generator.state = {
+                "bit_generator": "PCG64", "state": {"state": int(s), "inc": int(inc)},
+                "has_uint32": int(has32), "uinteger": int(uint),
+            }
+        return index
+
     # ---- the algorithm ----
 
     def _search_layer(
