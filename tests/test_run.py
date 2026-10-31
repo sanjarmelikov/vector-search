@@ -53,11 +53,15 @@ def test_untracked_files_do_not_make_runs_dirty(tmp_path, monkeypatch):
 
     git("init", "-q")
     (tmp_path / "code.py").write_text("x = 1\n")
-    git("add", "code.py")
+    (tmp_path / "results").mkdir()
+    (tmp_path / "results" / "phase.jsonl").write_text("{}\n")
+    git("add", "code.py", "results")
     git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "init")
     monkeypatch.setattr(run, "REPO_ROOT", tmp_path)
 
     (tmp_path / "results.jsonl").write_text("{}\n")  # untracked
+    assert run.git_info()["dirty"] is False
+    (tmp_path / "results" / "phase.jsonl").write_text("{}\n{}\n")  # tracked results file appended to
     assert run.git_info()["dirty"] is False
     (tmp_path / "code.py").write_text("x = 2\n")  # tracked change
     assert run.git_info()["dirty"] is True
