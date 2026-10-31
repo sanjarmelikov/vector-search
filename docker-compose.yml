@@ -1,0 +1,15 @@
+# docker compose up --build   →  http://localhost:8000
+services:
+  api:
+    build: .
+    ports: ["8000:8000"]
+    environment:
+      # Comma-separated API keys; leave empty for local use without keys.
+      VECTOR_API_KEYS: ${VECTOR_API_KEYS:-}
+      # Only needed for /answer (start with --answer): read from your .env, never baked into the image.
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+    volumes:
+      - index:/app/datasets/service
+    restart: unless-stopped
+volumes:
+  index:

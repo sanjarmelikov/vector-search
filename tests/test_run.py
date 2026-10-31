@@ -53,11 +53,15 @@ def test_untracked_files_do_not_make_runs_dirty(tmp_path, monkeypatch):
 
     git("init", "-q")
     (tmp_path / "code.py").write_text("x = 1\n")
-    git("add", "code.py")
+    (tmp_path / "results").mkdir()
+    (tmp_path / "results" / "phase.jsonl").write_text("{}\n")
+    git("add", "code.py", "results")
     git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "init")
     monkeypatch.setattr(run, "REPO_ROOT", tmp_path)
 
     (tmp_path / "results.jsonl").write_text("{}\n")  # untracked
+    assert run.git_info()["dirty"] is False
+    (tmp_path / "results" / "phase.jsonl").write_text("{}\n{}\n")  # tracked results file appended to
     assert run.git_info()["dirty"] is False
     (tmp_path / "code.py").write_text("x = 2\n")  # tracked change
     assert run.git_info()["dirty"] is True
@@ -81,7 +85,12 @@ def test_parse_index():
     assert isinstance(parse_index("flat", 8), FlatIndex)
     index = parse_index("hnsw-16-200-64", 8)
     assert isinstance(index, HNSWIndex) and (index.M, index.ef_construction, index.ef_search) == (16, 200, 64)
-    assert type(parse_index("faiss-hnsw-8-100-32", 8)).__name__ == "FaissHNSWIndex"
+    try:
+        import faiss  # noqa: F401
+    except ImportError:
+        pass  # optional dependency; the spec still parses, building needs faiss
+    else:
+        assert type(parse_index("faiss-hnsw-8-100-32", 8)).__name__ == "FaissHNSWIndex"
     for bad in ("hnsw", "hnsw-16-200", "ivf-1-2-3", "hnsw-a-b-c", "faiss-16-200-64", "x-hnsw-1-2-3"):
         with pytest.raises(ValueError):
             parse_index(bad, 8)

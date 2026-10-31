@@ -8,6 +8,7 @@ C code, so threads do overlap in the heavy parts.
 
 from __future__ import annotations
 
+import hmac
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -15,18 +16,27 @@ from pathlib import Path
 import anyio.to_thread
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
+from fastapi.responses import FileResponse, JSONResponse
+from pydantic import BaseModel, Field, field_validator
 
 from vector.generate import OpenAIAnswerer, Source
 from vector.service.ratelimit import RateLimiter
 from vector.service.store import SearchStore, as_dicts, documents_from_payload
 
 
+def _not_blank(value: str) -> str:
+    if not value.strip():
+        raise ValueError("must contain non-whitespace text")
+    return value
+
+
 class DocumentIn(BaseModel):
-    id: str = Field(min_length=1)
-    title: str = ""
-    text: str = Field(min_length=1)
+    id: str = Field(min_length=1, max_length=200)
+    title: str = Field(default="", max_length=1000)
+    # Bounded so one request can't make the server embed (and hold) unlimited text.
+    text: str = Field(min_length=1, max_length=200_000)
+
+    _check_text = field_validator("id", "text")(_not_blank)
 
 
 class DocumentsIn(BaseModel):
@@ -38,12 +48,18 @@ class QueryIn(BaseModel):
     k: int = Field(default=10, ge=1, le=100)
     rerank: bool = False
 
+    _check_query = field_validator("query")(_not_blank)
+
 
 class AnswerIn(BaseModel):
     question: str = Field(min_length=1, max_length=2000)
     k: int = Field(default=5, ge=1, le=10)
     rerank: bool = False
 
+    _check_question = field_validator("question")(_not_blank)
+
+
+STATIC = Path(__file__).parent / "static"
 
 # Cost of each endpoint in rate-limit tokens: a re-ranked query runs a second
 # model over 50 passages, and an answer calls a paid LLM, so they cost more.
@@ -56,7 +72,20 @@ def create_app(
     save_dir: Path | None = None,
     answerer: OpenAIAnswerer | None = None,
     threads: int | None = None,
+    api_keys: set[str] | None = None,
+    max_body_bytes: int = 10 * 1024 * 1024,
+    read_only: bool = False,
 ) -> FastAPI:
+    """Build the app.
+
+    api_keys: if given, every endpoint except /health requires `x-api-key` to be one of
+    them (401 otherwise), and rate limits are per verified key. Without keys the API is
+    open (local use) and rate limits are per client IP, because an unverified key header
+    could be changed on every request to dodge the limit.
+
+    read_only: refuse POST /documents (403), for a public demo where anyone can search but
+    nobody may change the index.
+    """
     @asynccontextmanager
     async def lifespan(_: FastAPI):
         if threads:  # size the thread pool that runs the plain-def endpoints
@@ -65,12 +94,37 @@ def create_app(
 
     app = FastAPI(title="vector-search", version="0.1.0", lifespan=lifespan)
 
+    @app.middleware("http")
+    async def guard(request: Request, call_next):
+        # 1. Size: refuse oversized bodies from the header, before reading them.
+        length = request.headers.get("content-length")
+        if length and length.isdigit() and int(length) > max_body_bytes:
+            return JSONResponse(status_code=413, content={"detail": "request body too large"})
+        # 2. Readiness: while the initial index builds, data endpoints answer 503 so load
+        #    balancers and clients retry later instead of getting partial results.
+        if not store.ready and request.url.path not in ("/health", "/livez", "/"):
+            return JSONResponse(status_code=503, content={"detail": "index is still building"},
+                                headers={"Retry-After": "10"})
+        # 3. Authentication (everything except the health check and the static search page,
+        #    which holds no data; the page sends the key with its own API calls).
+        if api_keys and request.url.path not in ("/health", "/livez", "/"):
+            given = request.headers.get("x-api-key", "")
+            # compare_digest takes the same time whether the first or last character differs
+            if not any(hmac.compare_digest(given, k) for k in api_keys):
+                return JSONResponse(status_code=401, content={"detail": "missing or invalid API key"},
+                                    headers={"WWW-Authenticate": "ApiKey"})
+        return await call_next(request)
+
+    def client_id(request: Request) -> str:
+        if api_keys:
+            return "key:" + request.headers["x-api-key"]  # verified by the middleware
+        return "ip:" + (request.client.host if request.client else "unknown")
+
     def charge(request: Request, cost: int) -> None:
         """Ask the rate limiter whether this client may spend `cost` tokens; 429 if not."""
         if limiter is None:
             return
-        client = request.headers.get("x-api-key") or (request.client.host if request.client else "anon")
-        decision = limiter.allow(client, cost)
+        decision = limiter.allow(client_id(request), cost)
         if not decision.allowed:
             raise HTTPException(
                 status_code=429,
@@ -78,9 +132,20 @@ def create_app(
                 headers={"Retry-After": str(max(1, round(decision.retry_after)))},
             )
 
+    @app.get("/", include_in_schema=False)
+    def page() -> FileResponse:
+        return FileResponse(STATIC / "index.html")
+
+    @app.get("/livez", include_in_schema=False)
+    def livez() -> dict:
+        """Liveness: the process is up and answering (restart it only if this fails)."""
+        return {"status": "alive"}
+
     @app.get("/health")
-    def health() -> dict:
-        return {"status": "ok", **store.stats()}
+    def health() -> JSONResponse:
+        # Readiness: 200 only once the index is built (route traffic here only then).
+        status = "ok" if store.ready else "building"
+        return JSONResponse(status_code=200 if store.ready else 503, content={"status": status, **store.stats()})
 
     @app.post("/query")
     def query(body: QueryIn, request: Request) -> dict:
@@ -112,6 +177,8 @@ def create_app(
 
     @app.post("/documents", status_code=201)
     def add_documents(body: DocumentsIn, request: Request) -> dict:
+        if read_only:
+            raise HTTPException(status_code=403, detail="this server is read-only")
         charge(request, COSTS["documents"])
         added = store.add_documents(documents_from_payload([d.model_dump() for d in body.documents]))
         if save_dir is not None and added:

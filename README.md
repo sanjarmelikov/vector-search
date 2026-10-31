@@ -3,8 +3,16 @@
 A vector retrieval service built around a from-scratch HNSW index, benchmarked
 against exact search and FAISS on the [BEIR SciFact](https://github.com/beir-cellar/beir) dataset.
 
-> Work in progress. Every number below comes from a recorded run in
-> [`results/`](results/), tagged with the commit that produced it.
+> Every number below comes from a recorded run in [`results/`](results/), tagged
+> with the commit that produced it. CI runs the full test suite on every push.
+
+## Highlights
+
+| Claim | Evidence |
+|---|---|
+| **HNSW from scratch** (`vector/index/hnsw.py`) matches **FAISS recall within 0.8 points** on SIFT1M and searches **8× faster than exact search at 250K vectors** (recall@10 0.97) | [Phase 4](#phase-4-speed-at-scale-exact-vs-our-hnsw-vs-faiss-sift1m), `results/phase4.jsonl` |
+| **25 retrieval configurations** on BEIR SciFact with paired significance tests: the embedding model is the only significant driver (**nDCG@10 0.645 → 0.713, p < 0.001**); re-ranking gave no significant gain | [Phase 2](#phase-2-chunking-strategy--chunk-size--embedding-model), [Phase 5](#phase-5-re-ranking-with-cross-encoders) |
+| **FastAPI RAG service**: persistent incremental indexing, API keys, rate limiting; **micro-batching raised throughput 3.2× (93 → 299 req/s)** and cut p99 from 698 to 359 ms at 64 clients | [Phases 6–7](#phase-6-the-search-service), `results/phase7.jsonl` |
 
 ## Architecture
 
@@ -40,36 +48,38 @@ Reproduce:
 
 ### Phase 2: chunking strategy × chunk size × embedding model
 
-Three chunkers (fixed word window, sentence-packing, recursive) at 100 / 150 / 200 words with 20% overlap, plus whole documents, on two local models of the same size (384 dimensions): **all-MiniLM-L6-v2** (256-token limit) and **bge-small-en-v1.5** (512-token limit, queries prefixed with its retrieval instruction). Exact search, 20 configurations, all from commit `49e953d`.
+Three chunkers (fixed word window, sentence-packing, recursive) at 100 / 150 / 200 words with 20% overlap, plus whole documents, on two local models of the same size (384 dimensions), **all-MiniLM-L6-v2** (256-token limit) and **bge-small-en-v1.5** (512-token limit, queries prefixed with its retrieval instruction), and OpenAI's **text-embedding-3-small** (1,536 dimensions, 8,191-token limit). Exact search, 30 configurations. MiniLM and bge-small rows come from commit `49e953d`; OpenAI rows from `a0ec118` (whole documents) and `0c270bb` (the rest). Embedding all of SciFact with OpenAI costs about 3 cents.
 
 nDCG@10 (best per model in bold):
 
-| Chunking | MiniLM | Truncated | bge-small | Truncated |
-|---|---:|---:|---:|---:|
-| whole document | 0.645 | 71.0% | 0.713 | 8.8% |
-| fixed 100 / 20 | **0.674** | 0.2% | 0.716 | 0% |
-| fixed 150 / 30 | 0.652 | 15.2% | 0.713 | 0% |
-| fixed 200 / 40 | 0.648 | 49.2% | 0.712 | 0% |
-| sentence 100 / 20 | 0.661 | 0.1% | 0.704 | 0% |
-| sentence 150 / 30 | 0.653 | 8.2% | **0.726** | 0% |
-| sentence 200 / 40 | 0.658 | 43.8% | 0.708 | 0% |
-| recursive 100 / 20 | 0.663 | 0.1% | 0.706 | 0% |
-| recursive 150 / 30 | 0.654 | 10.1% | 0.717 | 0% |
-| recursive 200 / 40 | 0.651 | 44.7% | 0.708 | 0% |
+| Chunking | MiniLM | Truncated | bge-small | Truncated | OpenAI small | Truncated |
+|---|---:|---:|---:|---:|---:|---:|
+| whole document | 0.645 | 71.0% | 0.713 | 8.8% | 0.717 | 0% |
+| fixed 100 / 20 | **0.674** | 0.2% | 0.716 | 0% | 0.727 | 0% |
+| fixed 150 / 30 | 0.652 | 15.2% | 0.713 | 0% | 0.719 | 0% |
+| fixed 200 / 40 | 0.648 | 49.2% | 0.712 | 0% | 0.717 | 0% |
+| sentence 100 / 20 | 0.661 | 0.1% | 0.704 | 0% | **0.731** | 0% |
+| sentence 150 / 30 | 0.653 | 8.2% | **0.726** | 0% | 0.722 | 0% |
+| sentence 200 / 40 | 0.658 | 43.8% | 0.708 | 0% | 0.712 | 0% |
+| recursive 100 / 20 | 0.663 | 0.1% | 0.706 | 0% | 0.728 | 0% |
+| recursive 150 / 30 | 0.654 | 10.1% | 0.717 | 0% | 0.719 | 0% |
+| recursive 200 / 40 | 0.651 | 44.7% | 0.708 | 0% | 0.712 | 0% |
 
 - **The model matters far more than chunking.** bge-small on whole documents (0.713) beats every MiniLM configuration, including MiniLM's best (0.674): Δ = +0.039, 95% CI [+0.013, +0.065], p = 0.004 (paired randomization test).
 - **For MiniLM, chunking mostly fixes truncation, but the evidence is moderate.** All three 100-word configurations (≤0.2% truncated) score above every larger one. The best, fixed-100-20, beats whole documents by +0.029, 95% CI [+0.006, +0.051], p = 0.011, but p = 0.10 after Holm correction across the 9 chunkers compared.
+- **OpenAI's model beats MiniLM but not bge-small.** On whole documents text-embedding-3-small (0.717) beats MiniLM (0.645): Δ = +0.072, 95% CI [+0.041, +0.102], Holm-corrected p = 0.001. Against bge-small on whole documents (0.713), even OpenAI's best configuration (sentence 100 / 20, 0.731) is not distinguishable: Δ = +0.019, 95% CI [−0.009, +0.045], p = 0.18 uncorrected, 1.0 after Holm across the 10 configurations. No OpenAI chunker differs significantly from whole documents either (all Holm p = 1.0).
 - **For bge-small, chunking makes no detectable difference.** It reads 512 tokens (whole abstracts truncated only 8.8%), and no chunker differs from whole documents (all Holm-corrected p ≥ 0.85; the "best", sentence-150-30 at +0.013, has p = 0.09 uncorrected).
 - **Recursive ≈ sentence on this data.** Every SciFact document's only paragraph break is between title and abstract, so the recursive splitter falls through to sentences.
 
 Significance: per-query nDCG@10 in `results/phase2_per_query.jsonl` (same numbers as `phase2.jsonl`), compared with `python -m vector.eval.compare results/phase2_per_query.jsonl --base bge-small:whole` (paired randomization test, bootstrap CI, Holm correction).
 
-Full table: `python -m vector.eval.report results/phase2.jsonl`. Reproduce:
+Full table: `python -m vector.eval.report results/phase2.jsonl`. Reproduce (the OpenAI line needs `OPENAI_API_KEY` in `.env`):
 
 ```bash
 G="whole fixed-100-20 fixed-150-30 fixed-200-40 sentence-100-20 sentence-150-30 sentence-200-40 recursive-100-20 recursive-150-30 recursive-200-40"
 .venv/bin/python -m vector.eval.run --model minilm    --chunker $G --out results/phase2.jsonl
 .venv/bin/python -m vector.eval.run --model bge-small --chunker $G --out results/phase2.jsonl
+.venv/bin/python -m vector.eval.run --model openai-small --chunker $G --out results/phase2.jsonl
 ```
 
 ### Phase 3: from-scratch HNSW vs exact search
@@ -197,9 +207,9 @@ Rows: `results/phase7.jsonl` (commits `4a5c027`, `a957bdd`, `1e5ccf6`). Reproduc
 .venv/bin/python -m vector.service.loadtest --concurrency 16 --duration 15 --shared-key
 ```
 
-### Phase 8: grounded answers (built, not yet run live)
+### Phase 8: grounded answers
 
-`POST /answer` retrieves the top 5 documents, sends them to an OpenAI chat model as numbered sources with the instruction to answer only from them and cite [n], then checks every citation against the sources it sent; citations to non-existent sources are returned in `invalid_citations`. It's tested end to end with a fake client. **Live answers need `OPENAI_API_KEY` in `.env`**; start with `python -m vector.service --answer`.
+`POST /answer` retrieves the top 5 documents, sends them to an OpenAI chat model as numbered sources with the instruction to answer only from them and cite [n], then checks every citation against the sources it sent; citations to non-existent sources are returned in `invalid_citations`. It's tested end to end with a fake client, and was run live once with `gpt-4.1-mini` ("Does vitamin D reduce the risk of colorectal cancer?": two valid citations, no invalid ones, about 1.3 s to embed, 0.2 s to search, 3.5 s to generate). **Live answers need `OPENAI_API_KEY` in `.env`**; start with `python -m vector.service --answer`.
 
 ## Roadmap
 
@@ -211,11 +221,11 @@ Rows: `results/phase7.jsonl` (commits `4a5c027`, `a957bdd`, `1e5ccf6`). Reproduc
 - [x] Exact-search baseline on SciFact (MiniLM)
 - [x] From-scratch HNSW index
 - [x] FAISS HNSW comparison (SIFT1M)
-- [x] Chunking × embedding-model sweep (local models; OpenAI pending)
+- [x] Chunking × embedding-model sweep (MiniLM, bge-small, OpenAI)
 - [x] Re-ranking (measured: no significant gain)
 - [x] FastAPI service, persistence, incremental indexing
 - [x] Rate limiting and load testing (Throttle dropped; built-in token bucket)
-- [x] Grounded answers with citation checking (live run pending an API key)
+- [x] Grounded answers with citation checking (run live with gpt-4.1-mini)
 
 ## Development
 
