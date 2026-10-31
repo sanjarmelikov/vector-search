@@ -75,3 +75,10 @@ def evaluate(
         totals[f"ndcg@{ndcg_k}"] += ndcg_at_k(ranked, relevant, ndcg_k)
     n = max(len(qrels), 1)
     return {name: total / n for name, total in totals.items()}
+
+
+def per_query_ndcg(
+    results: Mapping[str, list[str]], qrels: Mapping[str, Mapping[str, int]], k: int = 10
+) -> dict[str, float]:
+    """nDCG@k for each judged query, for paired significance tests between systems."""
+    return {query_id: ndcg_at_k(results.get(query_id, []), rel, k) for query_id, rel in qrels.items()}
